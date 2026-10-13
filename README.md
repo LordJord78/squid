@@ -20,11 +20,29 @@ in the Obsidian vault (`65 LEARNING/Squid/`).
 - **Behaviour, not code.** LM Studio and Claude Code are proprietary, and their terms forbid reverse
   engineering. Everything here is rebuilt from their public docs and from recordings of the real
   LM Studio server (`golden/`). Nothing is decompiled or copied.
-- **Local only.** The server binds to `127.0.0.1`. No cloud, no API keys.
+- **Local only.** The server binds to `127.0.0.1`. No cloud. Each engine is locked with a random key
+  that only Squid knows.
 - **No runtime dependencies.** Node 24 runs the `.ts` files directly. `typescript` and `@types/node`
   are dev-only, for type checking.
 
-## Run it
+## Use it
+
+```
+npm run engine:get        # once: download llama.cpp (pinned, checksum-verified) into runtime/
+npm link                  # once: puts `squid` on your PATH (undo: npm unlink -g squid)
+
+squid                     # start the server in the background and load your default model
+squid ask "…"             # one question, streamed
+squid ps                  # what's loaded (models loaded on demand unload after 60 min unused)
+squid unload --all        # free the GPU
+squid server stop         # stop the background server
+```
+
+Settings live in `~/.squid/config.json`, e.g.
+`{"defaultModel": "qwen3.8-27b-text", "models": {"qwen3.8-27b-text": {"contextLength": 49152}}}`.
+The OpenAI-style API is at `http://127.0.0.1:1235/v1` (LM Studio uses 1234).
+
+## Develop it
 
 ```
 npm test                  # every test

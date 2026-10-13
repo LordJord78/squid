@@ -4,20 +4,34 @@
 import { createServer, request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { listModels, type ShelfModel } from "./models.ts";
-import { running, RUNTIME, type Engine } from "./engine.ts";
+import { loadOnDemand, running, RUNTIME, secondsLeft, status, touch, unload, type Engine } from "./engine.ts";
+import { readConfig, type Config } from "./config.ts";
 import { sseData, sseEvent } from "./sse.ts";
 
 export const DEFAULT_PORT = 1235; // next door to LM Studio's 1234, so both can run at once
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 
-// Where the server gets its facts. Tests pass in fakes; normally it's the real shelf and engines.
-export type Sources = { shelf: () => ShelfModel[]; engines: () => Engine[] };
-const REAL: Sources = { shelf: () => listModels(), engines: () => running(true) };
+// Where the server gets its facts and how it loads models. Tests pass in fakes; normally it's the real
+// shelf and engines. Without `load`, nothing is loaded on demand.
+export type Sources = {
+  shelf: () => ShelfModel[];
+  engines: () => Engine[];
+  load?: (model: ShelfModel) => Promise<Engine>;
+  touch?: (engine: Engine) => void;
+  config?: () => Config;
+};
+const REAL: Sources = { shelf: () => listModels(), engines: () => running(true), load: (model) => loadOnDemand(model), touch, config: readConfig };
 
 export function startServer(port = DEFAULT_PORT, sources = REAL): Promise<Server> {
   const server = createServer((req, res) => {
     handle(req, res, sources).catch((err: Error) => fail(res, 500, { error: { message: err.message, type: "server_error" } }));
   });
+  // The idle timer: every 30 s, unload models that have gone unused past their time to live.
+  // unref() lets the program exit even while this timer is set.
+  if (sources === REAL) {
+    const sweep = setInterval(() => unloadIdle().catch(() => {}), 30_000).unref();
+    server.on("close", () => clearInterval(sweep));
+  }
   return new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => resolve(server)); // this PC only, never 0.0.0.0
@@ -90,14 +104,18 @@ async function chat(req: IncomingMessage, res: ServerResponse, sources: Sources,
   }
   if (!Array.isArray(body.messages)) return fail(res, 400, { error: "'messages' field is required" });
 
-  // The model asked for, or the only one loaded if none was named. LM Studio would load a model here
-  // (and answers an unknown name with a different model); Squid says what's wrong instead.
-  const engines = sources.engines();
-  const engine = engines.find((e) => e.identifier === body.model) ?? (body.model === undefined && engines.length === 1 ? engines[0] : undefined);
-  if (!engine) {
-    const message = body.model === undefined ? "No model named, and not exactly one model loaded. See `squid ps`." : `Model "${body.model}" isn't loaded. Load it with: squid load ${body.model}`;
-    return fail(res, 404, { error: { message, type: "invalid_request", code: "model_not_loaded" } });
+  let engine;
+  try {
+    engine = await engineFor(body.model, sources);
+  } catch (err) {
+    return fail(res, 500, { error: { message: `couldn't load ${body.model}: ${(err as Error).message}`, type: "server_error" } });
   }
+  if (!engine) {
+    // LM Studio answers an unknown name with a different model; Squid says what's wrong instead.
+    const message = body.model === undefined ? "No model named, none loaded, and no defaultModel in ~/.squid/config.json." : `There's no model called "${body.model}". See \`squid ls\`.`;
+    return fail(res, 404, { error: { message, type: "invalid_request", code: "model_not_found" } });
+  }
+  res.on("close", () => sources.touch?.(engine)); // restart its idle timer once this answer is done
   // Observed: LM Studio streams /api/v0 exactly like /v1, without the extra stats.
   if (body.stream) return streamChat(res, engine, body);
 
@@ -156,6 +174,32 @@ async function chat(req: IncomingMessage, res: ServerResponse, sources: Sources,
 // OpenAI's finish_reason → LM Studio's stop_reason. The first two are observed; "toolCalls" is the
 // name LM Studio's SDK documents.
 const STOP_REASONS: Record<string, string> = { stop: "eosFound", length: "maxPredictedTokensReached", tool_calls: "toolCalls" };
+
+// The engine for a request: the one already loaded under that name; with no name, the only one loaded
+// or your default model; otherwise the named model, loaded now ("just in time", as LM Studio does).
+// Requests that arrive while a model is loading share that one load.
+const loading = new Map<string, Promise<Engine>>();
+
+async function engineFor(name: string | undefined, sources: Sources): Promise<Engine | undefined> {
+  const engines = sources.engines().filter((e) => e.pid !== 0); // pid 0 = still being set up
+  const ready = name === undefined && engines.length === 1 ? engines[0] : engines.find((e) => e.identifier === name);
+  if (ready) return ready;
+  const wanted = name ?? sources.config?.().defaultModel;
+  const model = sources.shelf().find((m) => m.key === wanted && m.type === "llm");
+  if (!model || !sources.load) return undefined;
+  if (!loading.has(model.key)) {
+    loading.set(model.key, sources.load(model).finally(() => loading.delete(model.key)));
+  }
+  return loading.get(model.key);
+}
+
+// Unloads every model whose idle time is up, unless it's busy answering right now.
+async function unloadIdle() {
+  for (const engine of running(true)) {
+    const left = secondsLeft(engine);
+    if (left !== undefined && left <= 0 && (await status(engine)) === "IDLE") await unload(engine.identifier);
+  }
+}
 
 // Streaming: pass the engine's events on one at a time as they arrive, rewritten in LM Studio's shape.
 async function streamChat(res: ServerResponse, engine: Engine, body: any) {

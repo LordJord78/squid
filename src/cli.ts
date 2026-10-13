@@ -3,20 +3,25 @@
 import { parseArgs } from "node:util";
 import { readGgufHeader, describeModel } from "./gguf.ts";
 import { listModels, type ShelfModel } from "./models.ts";
-import { load, running, status, unload } from "./engine.ts";
+import { load, loadOnDemand, running, secondsLeft, status, unload, type Engine } from "./engine.ts";
 import { startServer, DEFAULT_PORT } from "./server.ts";
+import { ensureServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
+import { readConfig } from "./config.ts";
 import { ask } from "./ask.ts";
 
 const [command, ...args] = process.argv.slice(2);
 
 const USAGE = `usage:
+  squid                     start your local AI: the server, plus your default model
   squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
                             start the engine with a model ("27b" is enough if only one name contains it)
   squid ps                  models that are loaded now
   squid unload <name>|--all stop the engine and free the GPU
-  squid serve [--port N]    the local API server (OpenAI-style), on 127.0.0.1:1235
+  squid server start|stop|status
+                            the API server (OpenAI-style) in the background, on 127.0.0.1:1235
+  squid serve [--port N]    the same server in this window (Ctrl+C stops it)
   squid ask "<question>" [--model NAME] [--system TEXT] [--stats]
                             one question, answered as it's written`;
 
@@ -57,6 +62,23 @@ function whole(text: string | undefined, flag: string): number | undefined {
   return n;
 }
 
+// "Loading … 12 s", updated in place: \r returns to the start of the line, \x1b[K clears it.
+function counter(label: string) {
+  const tty = process.stdout.isTTY;
+  return {
+    tick: (seconds: number) => tty && process.stdout.write(`\r${label}… ${Math.floor(seconds)} s`),
+    clear: () => tty && process.stdout.write("\r\x1b[K"),
+  };
+}
+
+// The idle timer as LM Studio shows it: time left / time to live, e.g. "60m / 1h" (observed).
+function ttlText(engine: Engine): string {
+  const left = secondsLeft(engine);
+  if (left === undefined) return "";
+  const total = engine.ttlSeconds!;
+  return `${Math.max(0, Math.ceil(left / 60))}m / ${total % 3600 === 0 ? `${total / 3600}h` : `${Math.round(total / 60)}m`}`;
+}
+
 function shelfTable(title: string, models: ShelfModel[]): string {
   const rows = models.map((m) => [
     m.catalog ? `${m.key} (${m.variants} variant${m.variants === 1 ? "" : "s"})` : m.key,
@@ -69,6 +91,43 @@ function shelfTable(title: string, models: ShelfModel[]): string {
 }
 
 switch (command) {
+  case undefined: {
+    // One word: the server in the background, then your default model, loaded the way a request would
+    // load it, so it unloads itself after an hour unused.
+    let server;
+    try {
+      server = await ensureServer();
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    console.log(`Squid's server is running on http://127.0.0.1:${server.port}`);
+    const name = readConfig().defaultModel;
+    if (!name) {
+      console.log(`\nNo default model yet. Add one to ~/.squid/config.json, e.g. {"defaultModel": "qwen3.8-27b-text"}\n\n${USAGE}`);
+      break;
+    }
+    const model = pickModel(name);
+    const progress = counter(`Loading ${model.key}`);
+    let engine;
+    try {
+      engine = await loadOnDemand(model, progress.tick);
+    } catch (err) {
+      progress.clear();
+      fail((err as Error).message);
+    }
+    progress.clear();
+    const idle = engine.ttlSeconds ? `; unloads after ${Math.round(engine.ttlSeconds / 60)} min unused` : "";
+    console.log(`${engine.identifier} is ready (${engine.contextLength.toLocaleString("en-US")}-token context${idle}).\n`);
+    console.log(`  squid ask "…"         ask it something`);
+    console.log(`  squid ps              what's loaded`);
+    console.log(`  squid unload --all    free the GPU (for games)`);
+    break;
+  }
+  case "help":
+  case "--help":
+  case "-h":
+    console.log(USAGE);
+    break;
   case "ls": {
     const shelf = listModels();
     const total = shelf.reduce((sum, m) => sum + m.sizeBytes, 0);
@@ -110,21 +169,22 @@ switch (command) {
     });
     if (!positionals[0]) fail("usage: squid load <model> [--context N] [--parallel N]");
     const model = pickModel(positionals[0]);
-    const tty = process.stdout.isTTY;
+    const progress = counter(`Loading ${model.key}`);
     let engine;
     try {
       engine = await load(
         model,
         { contextLength: whole(values.context, "--context"), parallel: whole(values.parallel, "--parallel"), identifier: values.identifier },
-        // \r returns to the start of the line, so the counter updates in place.
-        (seconds) => tty && process.stdout.write(`\rLoading ${model.key}… ${Math.floor(seconds)} s`),
+        progress.tick,
       );
     } catch (err) {
-      if (tty) process.stdout.write("\n");
+      progress.clear();
       fail((err as Error).message);
     }
-    if (tty) process.stdout.write("\r\x1b[K"); // clear the counter line
-    console.log(`Loaded ${engine.identifier} (${size(model.sizeBytes)}, ${engine.contextLength.toLocaleString("en-US")}-token context).`);
+    progress.clear();
+    // load() hands back the existing engine when the model was already loaded (by someone else).
+    if (engine.loader !== process.pid) console.log(`${engine.identifier} is already loaded.`);
+    else console.log(`Loaded ${engine.identifier} (${size(model.sizeBytes)}, ${engine.contextLength.toLocaleString("en-US")}-token context).`);
     break;
   }
   case "ps": {
@@ -134,7 +194,7 @@ switch (command) {
       break;
     }
     const rows = await Promise.all(
-      engines.map(async (e) => [e.identifier, e.key, await status(e), size(e.sizeBytes), String(e.contextLength), String(e.parallel), "Local", ""]),
+      engines.map(async (e) => [e.identifier, e.key, await status(e), size(e.sizeBytes), String(e.contextLength), String(e.parallel), "Local", ttlText(e)]),
     );
     console.log(`\n${table(["IDENTIFIER", "MODEL", "STATUS", "SIZE", "CONTEXT", "PARALLEL", "DEVICE", "TTL"], rows)}\n`);
     break;
@@ -170,7 +230,26 @@ switch (command) {
     } catch (err) {
       fail((err as NodeJS.ErrnoException).code === "EADDRINUSE" ? `port ${port} is already in use (is Squid already serving?)` : (err as Error).message);
     }
+    recordServer({ pid: process.pid, port }); // so `squid server status` and other commands can find it
     console.log(`Squid is serving on http://127.0.0.1:${port}  (Ctrl+C stops the server; loaded models keep running)`);
+    break;
+  }
+  case "server": {
+    // Like `lms server start | stop | status`. "The server is not running." is LM Studio's wording.
+    if (args[0] === "start") {
+      try {
+        console.log(`The server is running on port ${(await ensureServer()).port}.`);
+      } catch (err) {
+        fail((err as Error).message);
+      }
+    } else if (args[0] === "stop") {
+      console.log((await stopServer()) ? "Stopped the server." : "The server is not running.");
+    } else if (args[0] === "status") {
+      const info = await serverStatus();
+      console.log(info ? `The server is running on port ${info.port}.` : "The server is not running.");
+    } else {
+      fail("usage: squid server start | stop | status");
+    }
     break;
   }
   default:

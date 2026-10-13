@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENGINE, engineArgs, lmstudioTuning, load, running, settingsFor, unload } from "../src/engine.ts";
+import { ENGINE, engineArgs, lmstudioTuning, load, running, secondsLeft, settingsFor, unload, type Engine } from "../src/engine.ts";
 import { listModels, modelRoots, type ShelfModel } from "../src/models.ts";
 import { tempDir } from "./helpers.ts";
 
@@ -30,14 +30,22 @@ test("reads the tuning LM Studio saved for a model", () => {
   assert.deepEqual(lmstudioTuning(fakeModel(join("D:", "models", "acme", "Other", "x.gguf")), configDir), {}, "never tuned");
 });
 
-test("settings: LM Studio's defaults, then the saved tuning, then what you typed", () => {
-  assert.deepEqual(settingsFor({}, {}), { contextLength: 8192, parallel: 4 });
-  assert.deepEqual(settingsFor({ parallel: 1, kCacheType: "q4_0" }, {}), { parallel: 1, kCacheType: "q4_0", contextLength: 8192 });
-  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152, parallel: 2 }), { parallel: 2, contextLength: 49152 });
+test("settings: LM Studio's defaults, its saved tuning, Squid's config, then what you typed", () => {
+  assert.deepEqual(settingsFor({}, {}, {}), { contextLength: 8192, parallel: 4 });
+  assert.deepEqual(settingsFor({ parallel: 1, kCacheType: "q4_0" }, {}, {}), { parallel: 1, kCacheType: "q4_0", contextLength: 8192 });
+  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, {}), { parallel: 1, contextLength: 49152 }, "config file beats LM Studio");
+  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, { contextLength: 4096, parallel: 2 }), { parallel: 2, contextLength: 4096 }, "typed beats all");
+});
+
+test("the idle timer counts from the last answer", () => {
+  const engine = { ttlSeconds: 3600, lastUsed: 1_000_000 } as Engine;
+  assert.equal(secondsLeft(engine, 1_000_000), 3600);
+  assert.equal(secondsLeft(engine, 1_000_000 + 10 * 60_000), 3000, "10 minutes later");
+  assert.equal(secondsLeft({ lastUsed: 0 } as Engine), undefined, "loaded with squid load: no timer");
 });
 
 test("the engine answers only on this PC, only to Squid, and never downloads", () => {
-  const args = engineArgs(fakeModel("m.gguf"), "tiny-7b", 50000, "secret", settingsFor({ kCacheType: "q4_0" }, {}));
+  const args = engineArgs(fakeModel("m.gguf"), "tiny-7b", 50000, "secret", settingsFor({ kCacheType: "q4_0" }, {}, {}));
   const flag = (name: string) => args[args.indexOf(name) + 1];
   assert.equal(flag("--host"), "127.0.0.1");
   assert.equal(flag("--api-key"), "secret");
@@ -68,4 +76,16 @@ test("load, ps and unload match LM Studio", { skip: !ready && "engine not downlo
   assert.equal(await unload(model.key), true);
   assert.ok(!running().some((e) => e.identifier === model.key), "gone from ps");
   assert.equal(await fetch(`http://127.0.0.1:${engine.port}/health`).then(() => "up", () => "down"), "down", "process stopped");
+});
+
+// The race from step 04: two loads of the same model at the same instant.
+test("two loads at once start one engine", { skip: !ready && "engine not downloaded or model drive not connected", timeout: 300_000 }, async (t) => {
+  const model = listModels(modelRoots()).find((m) => m.key === "qwen/qwen3.5-9b")!;
+  t.after(() => unload(model.key));
+  const [first, second] = await Promise.all([load(model, { contextLength: 8192 }), load(model, { contextLength: 8192 })]);
+  assert.equal(first.pid, second.pid, "both got the same engine");
+  const engines = execFileSync("tasklist", ["/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"], { encoding: "utf8" });
+  assert.equal(engines.trim().split("\n").filter((row) => row.startsWith('"llama-server.exe"')).length, 1, "one llama-server running");
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  assert.match(execFileSync(process.execPath, [cli, "load", model.key], { encoding: "utf8" }), /is already loaded/);
 });

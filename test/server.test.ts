@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { startServer, type Sources } from "../src/server.ts";
+import { serverStatus, ensureServer, stopServer } from "../src/daemon.ts";
 import { ENGINE, load, running, unload, type Engine } from "../src/engine.ts";
 import { listModels, modelRoots, type ShelfModel } from "../src/models.ts";
 
@@ -41,11 +42,13 @@ async function fakeEngine(): Promise<{ server: Server; engine: Engine }> {
 
 // The record `squid load` would have written for an engine on this port.
 const engineRecord = (port: number): Engine => ({
-  identifier: "qwen/qwen3.5-9b", key: "qwen/qwen3.5-9b", pid: 0, port, apiKey: "test-key",
+  identifier: "qwen/qwen3.5-9b", key: "qwen/qwen3.5-9b", pid: process.pid, port, apiKey: "test-key",
   contextLength: 8192, parallel: 4, sizeBytes: 1, architecture: "qwen35", quantization: "Q4_K_M", log: "",
+  loader: process.pid, jit: false, lastUsed: Date.now(),
 });
 
-async function withServer(sources: Sources, run: (base: string) => Promise<void>) {
+// No sources: the real shelf and engines, loading on demand.
+async function withServer(sources: Sources | undefined, run: (base: string) => Promise<void>) {
   const server = await startServer(0, sources);
   try {
     await run(`http://127.0.0.1:${portOf(server)}`);
@@ -179,13 +182,44 @@ test("hanging up mid-answer stops the engine", async () => {
   }
 });
 
-test("a model that isn't loaded is refused, not swapped for another", async () => {
+test("an unknown model is refused, not swapped for another", async () => {
   const { server, engine } = await fakeEngine();
   try {
     await withServer({ shelf: () => [], engines: () => [engine] }, async (base) => {
       const res = await post(`${base}/v1/chat/completions`, JSON.stringify({ model: "nope", messages: [] }));
       assert.equal(res.status, 404);
-      assert.equal((await res.json()).error.code, "model_not_loaded");
+      assert.equal((await res.json()).error.code, "model_not_found");
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("a model that isn't loaded is loaded on demand, once, however many requests ask at the same time", async () => {
+  const { server, engine } = await fakeEngine();
+  const shelfModel = { key: "qwen/qwen3.5-9b", type: "llm" } as ShelfModel;
+  let loads = 0;
+  let loaded: Engine[] = [];
+  const sources: Sources = {
+    shelf: () => [shelfModel],
+    engines: () => loaded,
+    load: async () => {
+      loads++;
+      await new Promise((resolve) => setTimeout(resolve, 100)); // loading takes a while
+      loaded = [engine];
+      return engine;
+    },
+    config: () => ({ defaultModel: "qwen/qwen3.5-9b" }),
+  };
+  try {
+    await withServer(sources, async (base) => {
+      const ask = (model?: string) => post(`${base}/v1/chat/completions`, JSON.stringify({ model, messages: [{ role: "user", content: "hi" }] }));
+      const replies = await Promise.all([ask("qwen/qwen3.5-9b"), ask("qwen/qwen3.5-9b"), ask("qwen/qwen3.5-9b")]);
+      assert.deepEqual(replies.map((r) => r.status), [200, 200, 200]);
+      assert.equal(loads, 1, "three requests, one load");
+      loaded = [];
+      assert.equal((await ask()).status, 200, "no model named: the default model from the config file");
+      assert.equal(loads, 2);
     });
   } finally {
     server.close();
@@ -225,8 +259,37 @@ test("with the 9B loaded: model list and a real reply match LM Studio's", { skip
     assert.equal(sseEvents(streamed).map((c) => c.choices[0].delta.content ?? "").join(""), "pong");
   });
 
-  // `squid ask` end to end, as a separate program: only the answer reaches stdout.
+  // `squid ask` end to end, as a separate program: only the answer reaches stdout. It starts the
+  // background server if it isn't running; stop it again afterwards if this test started it.
+  if (!(await serverStatus())) t.after(() => stopServer());
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
   const stdout = execFileSync(process.execPath, [cli, "ask", "Reply with exactly one word: pong", "--model", model.key], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   assert.match(stdout.trim(), /^pong$/i);
+});
+
+test("a request for an unloaded model loads it, with LM Studio's idle timer", { skip: !(drive && existsSync(ENGINE)) && "engine or model drive missing", timeout: 300_000 }, async (t) => {
+  const key = "qwen/qwen3.5-9b";
+  await unload(key);
+  t.after(() => unload(key));
+  await withServer(undefined, async (base) => {
+    const res = await post(`${base}/v1/chat/completions`, JSON.stringify({ model: key, messages: [{ role: "user", content: "Reply with exactly one word: pong" }], max_tokens: 2000 }));
+    assert.equal(res.status, 200);
+    assert.match((await res.json()).choices[0].message.content, /pong/i);
+  });
+  const engine = running().find((e) => e.identifier === key)!;
+  assert.equal(engine.jit, true);
+  assert.equal(engine.ttlSeconds, 3600);
+  // LM Studio's `lms ps` showed "60m / 1h" for a model it had just loaded on demand.
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  assert.match(execFileSync(process.execPath, [cli, "ps"], { encoding: "utf8" }), /Local\s+60m \/ 1h/);
+});
+
+test("the server starts in the background, reports its status, and stops", { timeout: 60_000 }, async (t) => {
+  if (await serverStatus()) return t.skip("a Squid server is already running; leaving it alone");
+  const info = await ensureServer();
+  assert.deepEqual(await serverStatus(), info);
+  assert.equal((await fetch(`http://127.0.0.1:${info.port}/v1/does-not-exist`)).status, 200, "it answers like LM Studio");
+  assert.deepEqual(await ensureServer(), info, "a second start finds the running one");
+  assert.equal(await stopServer(), true);
+  assert.equal(await serverStatus(), undefined);
 });
