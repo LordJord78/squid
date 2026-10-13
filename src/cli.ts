@@ -11,7 +11,9 @@ import { MODES, type Mode } from "./rules.ts";
 import { ask } from "./ask.ts";
 import { chat } from "./chat.ts";
 import { web } from "./web.ts";
-import { encode, loadVocab, piece } from "./tokenizer.ts";
+import { decode, encode, loadVocab, piece } from "./tokenizer.ts";
+import { feed, forward, loadModel, newState, top } from "./transformer.ts";
+import { dim } from "./reply.ts";
 import { readFileSync } from "node:fs";
 
 const [command, ...args] = process.argv.slice(2);
@@ -24,6 +26,8 @@ const USAGE = `usage:
                             the same, in your browser, for the folder you're in (Ctrl+C stops it)
   squid tokenize <model> "<text>" [--ids] [--no-special] [--file PATH]
                             the tokens a model reads for some text (its own vocabulary, no GPU)
+  squid next <model> "<text>" [--steps N]
+                            Squid's own TypeScript engine (CPU): the likeliest next tokens, then N more
   squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
@@ -187,6 +191,46 @@ switch (command) {
     }
     console.log(`${ids.length} token${ids.length === 1 ? "" : "s"} (${model.key}, ${vocab.tokens.length.toLocaleString("en-US")}-token vocabulary)`);
     for (const id of ids) console.log(`${String(id).padStart(7)} -> '${piece(vocab, id)}'`); // as llama-tokenize lists them
+    break;
+  }
+  case "next": {
+    // Squid's own engine (step 16): every number computed in TypeScript, on the CPU, no llama.cpp.
+    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { steps: { type: "string" } } });
+    if (positionals.length < 2) fail('usage: squid next <model> "<text>" [--steps N]');
+    const steps = whole(values.steps, "--steps") ?? 12;
+    const shelf = pickModel(positionals[0]);
+    let model;
+    try {
+      model = loadModel(shelf.path);
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    const prompt = positionals.slice(1).join(" ");
+    const state = newState(model);
+    const started = performance.now();
+    let logits = feed(model, state, encode(model.vocab, prompt));
+    const promptMs = (performance.now() - started) / state.pos;
+    console.log(dim(`${shelf.key} in Squid's TypeScript engine, on the CPU (${state.pos} prompt tokens, ${promptMs.toFixed(0)} ms each)\n`));
+    const percent = (logprob: number) => `${(Math.exp(logprob) * 100).toFixed(logprob > -4.6 ? 0 : 1)}%`;
+    console.log(`next token:  ${top(logits, 5).map((c) => `${JSON.stringify(piece(model.vocab, c.id))} ${percent(c.logprob)}`).join("   ")}\n`);
+    // Then follow the likeliest token each time ("greedy"; step 17 adds proper sampling).
+    process.stdout.write(prompt);
+    const generated: number[] = [];
+    let shown = "";
+    const genStart = performance.now();
+    for (let i = 0; i < steps; i++) {
+      const next = top(logits, 1)[0].id;
+      if (next === model.vocab.eos) break;
+      generated.push(next);
+      const text = decode(model.vocab, generated);
+      if (!text.endsWith("�")) { // a character split across tokens is shown once it's whole
+        process.stdout.write(text.slice(shown.length));
+        shown = text;
+      }
+      logits = forward(model, state, next);
+    }
+    const seconds = (performance.now() - genStart) / 1000;
+    console.log(dim(`\n\n(${generated.length} tokens, ${(generated.length / seconds).toFixed(1)} tokens/s)`));
     break;
   }
   case "help":

@@ -22,6 +22,7 @@ export type Vocab = {
   split: RegExp[]; // the pre-tokenizer: patterns applied one after another
   specials: string[]; // control, user-defined and unknown tokens, longest first
   bos?: number;
+  eos?: number; // end of text: the model writes it when it's finished (step 16 stops there)
   addBos: boolean;
   cache: Map<string, number[]>; // pieces already worked out (the same words come up again and again)
 };
@@ -51,6 +52,7 @@ export function loadVocab(path: string): Vocab {
   const types = (list("tokenizer.ggml.token_type") as number[] | undefined) ?? tokens.map(() => NORMAL);
   const merges = (list("tokenizer.ggml.merges") as string[] | undefined) ?? [];
   const bos = meta.get("tokenizer.ggml.bos_token_id");
+  const eos = meta.get("tokenizer.ggml.eos_token_id");
   return {
     tokens,
     types,
@@ -59,6 +61,7 @@ export function loadVocab(path: string): Vocab {
     split,
     specials: tokens.filter((text, id) => text && [CONTROL, USER_DEFINED, UNKNOWN].includes(types[id])).sort((a, b) => b.length - a.length),
     bos: typeof bos === "number" ? bos : undefined,
+    eos: typeof eos === "number" ? eos : undefined,
     addBos: meta.get("tokenizer.ggml.add_bos_token") === true,
     cache: new Map(),
   };

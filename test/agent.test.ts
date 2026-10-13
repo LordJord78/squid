@@ -177,23 +177,32 @@ test("the real model answers from git history with read-only commands only", { s
 // then makes the change without a single edit question.
 test("the real model plans first, then carries out the approved plan", { skip: !ready && "engine or model drive missing", timeout: 300_000 }, async (t) => {
   t.after(() => unload("qwen/qwen3.5-9b"));
-  const root = tempDir();
-  writeFileSync(join(root, "greeting.txt"), "Helo world\n");
-  const plans: string[] = [];
-  const asked: Approval[] = [];
-  const session = newSession(root, async (request) => (asked.push(request), { ok: false }), undefined, {
-    mode: "plan",
-    choosePlan: async (plan) => (plans.push(plan), { choice: "auto" }),
-  });
   const server = await startServer(0);
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  const messages: Message[] = [...startConversation(root), { role: "user", content: "Fix the spelling mistake in greeting.txt." }];
   try {
-    await agentTurn(base, "qwen/qwen3.5-9b", messages, session, undefined, collector().out);
-    assert.equal(plans.length, 1, "it submitted one plan");
-    assert.equal(session.mode, "auto");
-    assert.equal(readFileSync(join(root, "greeting.txt"), "utf8").trim(), "Hello world");
-    assert.equal(asked.length, 0, "no edit questions after the plan was approved for auto mode");
+    // The 9B usually tries edit_file first, is blocked by plan mode, then submits a plan. About 1 run in
+    // 10 it answers in words without one (2 of 23 runs, measured in step 16). So it gets one more try:
+    // a bug in Squid would fail both, a 1-in-10 slip fails both about 1 time in 100.
+    for (let attempt = 1; ; attempt++) {
+      const root = tempDir();
+      writeFileSync(join(root, "greeting.txt"), "Helo world\n");
+      const plans: string[] = [];
+      const asked: Approval[] = [];
+      const session = newSession(root, async (request) => (asked.push(request), { ok: false }), undefined, {
+        mode: "plan",
+        choosePlan: async (plan) => (plans.push(plan), { choice: "auto" }),
+      });
+      const messages: Message[] = [...startConversation(root), { role: "user", content: "Fix the spelling mistake in greeting.txt." }];
+      const { reply } = await agentTurn(base, "qwen/qwen3.5-9b", messages, session, undefined, collector().out);
+      if (plans.length === 0 && attempt === 1) continue;
+      // If it didn't plan, say what it did instead.
+      const calls = messages.flatMap((m) => m.tool_calls?.map((c) => c.function.name) ?? []);
+      assert.equal(plans.length, 1, `it submitted one plan (it called ${calls.join(" → ")}, then said ${JSON.stringify(reply.content.slice(0, 200))})`);
+      assert.equal(session.mode, "auto");
+      assert.equal(readFileSync(join(root, "greeting.txt"), "utf8").trim(), "Hello world");
+      assert.equal(asked.length, 0, "no edit questions after the plan was approved for auto mode");
+      break;
+    }
   } finally {
     server.close();
   }

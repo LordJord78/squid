@@ -36,6 +36,7 @@ squid chat                # the agent in the terminal, working on this folder
 squid web                 # the same in your browser (a private link for this folder; Ctrl+C stops it)
 squid ask "…"             # one question, streamed
 squid tokenize 27b "…"    # the tokens a model reads for some text (from its own vocabulary)
+squid next smol "…"       # Squid's own TypeScript engine on the CPU: the likeliest next tokens
 squid ps                  # what's loaded (models loaded on demand unload after 60 min unused)
 squid unload --all        # free the GPU
 squid server stop         # stop the background server
@@ -52,6 +53,7 @@ npm test                  # every test
 npm run check             # type check
 npm run capture:lmstudio  # re-record the real LM Studio into golden/lmstudio/
 npm run capture:tokens    # re-record llama.cpp's tokenizer into golden/llamacpp/ (CPU only)
+npm run capture:forward   # re-record llama.cpp's next-token predictions for SmolLM2 (CPU only)
 ```
 
 Replay any step with `git log --oneline` and `git show <sha>`.

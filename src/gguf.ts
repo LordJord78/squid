@@ -91,6 +91,21 @@ function readValue(r: ByteReader, type: number, keep = true, whole = false): Ggu
 
 // `arrays`: keys whose arrays are kept whole, however long.
 export function readGgufHeader(path: string, arrays: string[] = []): GgufHeader {
+  return read(path, arrays, false);
+}
+
+// One weight table (step 16): its name, its shape, its number format, and where its bytes start, counted
+// from the start of the weights. shape[0] is the length of one row: those numbers are stored side by side.
+export type GgufTensor = { name: string; shape: number[]; type: number; offset: number };
+export type GgufFile = GgufHeader & { tensors: GgufTensor[]; dataStart: number };
+
+// The metadata and then the list of tensors. The weights follow, starting at the next multiple of
+// general.alignment (32 bytes unless the file says otherwise).
+export function readGgufFile(path: string, arrays: string[] = []): GgufFile {
+  return read(path, arrays, true) as GgufFile;
+}
+
+function read(path: string, arrays: string[], withTensors: boolean): GgufHeader | GgufFile {
   const fd = openSync(path, "r");
   try {
     const r = new ByteReader(fd);
@@ -105,11 +120,28 @@ export function readGgufHeader(path: string, arrays: string[] = []): GgufHeader 
       const key = r.string();
       metadata.set(key, readValue(r, r.u32(), true, arrays.includes(key)));
     }
-    return { version, tensorCount, metadata, headerBytes: r.consumed, fileBytes: fstatSync(fd).size };
+    const header = { version, tensorCount, metadata, headerBytes: r.consumed, fileBytes: fstatSync(fd).size };
+    if (!withTensors) return header;
+    const tensors: GgufTensor[] = [];
+    for (let i = 0; i < tensorCount; i++) {
+      const name = r.string();
+      const dims = r.u32();
+      const shape: number[] = [];
+      for (let d = 0; d < dims; d++) shape.push(Number(r.u64()));
+      tensors.push({ name, shape, type: r.u32(), offset: Number(r.u64()) });
+    }
+    const align = Number(metadata.get("general.alignment") ?? 32);
+    return { ...header, tensors, dataStart: Math.ceil(r.consumed / align) * align };
   } finally {
     closeSync(fd);
   }
 }
+
+// ggml's number formats for tensors (ggml.h, GGML_TYPE_*), the ones you'll meet.
+export const TENSOR_TYPES: Record<number, string> = {
+  0: "F32", 1: "F16", 2: "Q4_0", 3: "Q4_1", 6: "Q5_0", 7: "Q5_1", 8: "Q8_0", 9: "Q8_1",
+  10: "Q2_K", 11: "Q3_K", 12: "Q4_K", 13: "Q5_K", 14: "Q6_K", 15: "Q8_K", 30: "BF16",
+};
 
 // general.file_type → the quantisation name people use (llama.h, LLAMA_FTYPE_*).
 const FILE_TYPES: Record<number, string> = {
