@@ -11,6 +11,8 @@ import type { ShelfModel } from "./models.ts";
 
 // Downloaded by `npm run engine:get` (scripts/get-engine.ps1): llama.cpp b11580, CUDA 13 build.
 export const ENGINE = fileURLToPath(new URL("../runtime/llama.cpp/llama-server.exe", import.meta.url));
+// How replies name the engine, like LM Studio's "llama.cpp-win-x86_64-nvidia-cuda12-avx2" 2.56.0.
+export const RUNTIME = { name: "llama.cpp-win-x86_64-nvidia-cuda13", version: engineVersion() };
 const HOME = join(homedir(), ".squid");
 const LOADED = join(HOME, "loaded"); // one record per running engine
 const LOGS = join(HOME, "logs");
@@ -25,6 +27,8 @@ export type Engine = {
   contextLength: number;
   parallel: number;
   sizeBytes: number;
+  architecture: string; // copied from the shelf, so replies can describe the model without rereading it
+  quantization?: string;
   log: string;
 };
 
@@ -111,7 +115,10 @@ export async function load(model: ShelfModel, options: LoadOptions = {}, onWait?
   let exitCode: number | null = null;
   child.on("exit", (code) => (exitCode = code ?? -1));
 
-  const engine: Engine = { identifier, key: model.key, pid: child.pid!, port, apiKey, contextLength: settings.contextLength, parallel: settings.parallel, sizeBytes: model.sizeBytes, log };
+  const engine: Engine = {
+    identifier, key: model.key, pid: child.pid!, port, apiKey, contextLength: settings.contextLength, parallel: settings.parallel,
+    sizeBytes: model.sizeBytes, architecture: model.architecture, quantization: model.quantization, log,
+  };
   writeFileSync(recordFile(identifier), JSON.stringify(engine, null, 2));
 
   // /health answers 503 while the weights stream in from disk, then 200 when the model is ready.
@@ -196,6 +203,15 @@ function freePort(): Promise<number> {
       server.close(() => resolve(port));
     });
   });
+}
+
+// scripts/get-engine.ps1 writes the build tag (b11580) next to the engine.
+function engineVersion(): string {
+  try {
+    return readFileSync(new URL("../runtime/llama.cpp/VERSION", import.meta.url), "utf8").trim();
+  } catch {
+    return "not downloaded";
+  }
 }
 
 const fileName = (identifier: string) => encodeURIComponent(identifier); // "qwen/qwen3.5-9b" → "qwen%2Fqwen3.5-9b"

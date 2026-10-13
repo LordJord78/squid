@@ -9,7 +9,7 @@ import { listModels, modelRoots, type ShelfModel } from "../src/models.ts";
 import { tempDir } from "./helpers.ts";
 
 const fakeModel = (path: string): ShelfModel => ({
-  key: "tiny-7b", type: "llm", publisher: "acme", architecture: "llama", sizeBytes: 1, vision: false, catalog: false, variants: 1, path,
+  key: "tiny-7b", type: "llm", publisher: "acme", architecture: "llama", sizeBytes: 1, vision: false, toolUse: false, catalog: false, variants: 1, path,
 });
 
 test("reads the tuning LM Studio saved for a model", () => {

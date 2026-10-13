@@ -15,6 +15,7 @@ export type ShelfModel = {
   contextLength?: number;
   sizeBytes: number; // every .gguf in the folder, vision add-on included
   vision: boolean;
+  toolUse: boolean; // its chat template knows how to offer tools, so LM Studio lists "tool_use"
   catalog: boolean; // named by an LM Studio catalog entry
   variants: number; // model files in the folder (e.g. a Q4 and a Q8 of the same model)
   path: string; // the main .gguf file
@@ -88,6 +89,7 @@ export function listModels(roots = modelRoots(), catalog = catalogNames()): Shel
           contextLength: info.contextLength,
           sizeBytes: counted.reduce((sum, file) => sum + statSync(file).size, 0),
           vision: headers.some(isAddOn),
+          toolUse: !info.embedding && String(main.header.metadata.get("tokenizer.chat_template") ?? "").includes("tools"),
           catalog: entry !== undefined,
           variants: variants.length,
           path: main.file,

@@ -4,6 +4,7 @@ import { parseArgs } from "node:util";
 import { readGgufHeader, describeModel } from "./gguf.ts";
 import { listModels, type ShelfModel } from "./models.ts";
 import { load, running, status, unload } from "./engine.ts";
+import { startServer, DEFAULT_PORT } from "./server.ts";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -13,7 +14,8 @@ const USAGE = `usage:
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
                             start the engine with a model ("27b" is enough if only one name contains it)
   squid ps                  models that are loaded now
-  squid unload <name>|--all stop the engine and free the GPU`;
+  squid unload <name>|--all stop the engine and free the GPU
+  squid serve [--port N]    the local API server (OpenAI-style), on 127.0.0.1:1235`;
 
 // LM Studio shows sizes in decimal units (1 GB = 1,000,000,000 bytes), MB below 1 GB.
 const size = (bytes: number) => (bytes < 1e9 ? `${(bytes / 1e6).toFixed(2)} MB` : `${(bytes / 1e9).toFixed(2)} GB`);
@@ -141,6 +143,17 @@ switch (command) {
       if (await unload(name)) console.log(`Unloaded ${name}.`);
       else fail(`${name} isn't loaded (see \`squid ps\`)`);
     }
+    break;
+  }
+  case "serve": {
+    const { values } = parseArgs({ args, options: { port: { type: "string" } } });
+    const port = whole(values.port, "--port") ?? DEFAULT_PORT;
+    try {
+      await startServer(port);
+    } catch (err) {
+      fail((err as NodeJS.ErrnoException).code === "EADDRINUSE" ? `port ${port} is already in use (is Squid already serving?)` : (err as Error).message);
+    }
+    console.log(`Squid is serving on http://127.0.0.1:${port}  (Ctrl+C stops the server; loaded models keep running)`);
     break;
   }
   default:

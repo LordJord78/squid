@@ -11,7 +11,7 @@
     "node": ">=24.11"
   },
   "scripts": {
-    "test": "node --test \"test/**/*.test.ts\"",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "check": "tsc --noEmit",
     "capture:lmstudio": "pwsh -NoProfile -File golden/capture-lmstudio.ps1",
     "engine:get": "pwsh -NoProfile -File scripts/get-engine.ps1"
