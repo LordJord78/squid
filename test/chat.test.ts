@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { meter, parseLine } from "../src/chat.ts";
 import { ENGINE, unload } from "../src/engine.ts";
 import { serverStatus, stopServer } from "../src/daemon.ts";
+import { tempDir } from "./helpers.ts";
 
 test("a typed line is a message, a /command, or nothing", () => {
   assert.deepEqual(parseLine("  hello there "), { kind: "say", text: "hello there" });
@@ -35,7 +36,9 @@ test("the chat remembers earlier turns, forgets on /clear, and stops at /exit", 
     "this line comes after /exit and must not be sent",
   ];
   const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
-  const run = spawnSync(process.execPath, [cli, "chat", "--model", "qwen/qwen3.5-9b"], { input: lines.join("\n") + "\n", encoding: "utf8", timeout: 280_000 });
+  // Run in an empty folder: since step 08 the model can search the folder it's in, and in the Squid repo it
+  // found "my favourite colour is purple" in this very test file, even after /clear.
+  const run = spawnSync(process.execPath, [cli, "chat", "--model", "qwen/qwen3.5-9b"], { cwd: tempDir(), input: lines.join("\n") + "\n", encoding: "utf8", timeout: 280_000 });
   const answers = run.stdout.replace(/^› /, "").trim().split(/\r?\n/).map((a) => a.trim().toLowerCase());
   assert.equal(answers.length, 3, `three questions answered, nothing after /exit: ${JSON.stringify(answers)}`);
   assert.match(answers[1], /purple/, "remembered from the first turn");

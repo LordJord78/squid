@@ -3,7 +3,8 @@
 // conversation so far; that list of messages *is* the chat's memory.
 import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
-import { dim, streamReply, type Message } from "./ask.ts";
+import { dim, type Message } from "./reply.ts";
+import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
 
 // What a typed line asks for: nothing, a message for the model, or a /command for Squid.
 export type Line = { kind: "empty" } | { kind: "say"; text: string } | { kind: "command"; name: string; arg: string };
@@ -31,9 +32,10 @@ Ctrl+C while it's answering stops the answer.`;
 
 export async function chat(options: { model?: string; system?: string }): Promise<void> {
   const base = `http://127.0.0.1:${(await ensureServer()).port}`;
+  const root = process.cwd(); // the folder the model may look at: wherever you typed `squid`
   let model = options.model; // undefined: the server picks the loaded or default model
   let system = options.system;
-  let history: Message[] = [];
+  let history: Message[] = startConversation(root, system); // [0] is the system message
   let used = 0; // tokens the conversation takes up, from the last reply's usage count
   let answering: AbortController | undefined;
 
@@ -45,7 +47,7 @@ export async function chat(options: { model?: string; system?: string }): Promis
   const prompt = () => open && rl.prompt();
   // Ctrl+C: stop the answer being written, or, at the prompt, leave.
   rl.on("SIGINT", () => (answering ? answering.abort() : rl.close()));
-  process.stderr.write(dim(`Chatting with ${model ?? "your default model"}. /help for commands.\n`));
+  process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root} (it can read files here, not change them). /help for commands.\n`));
   prompt();
 
   // `for await` hands over typed lines one at a time and holds on to any that arrive while an answer
@@ -65,22 +67,26 @@ export async function chat(options: { model?: string; system?: string }): Promis
         }
         process.stderr.write(dim(`Model: ${model ?? "your default model"}\n`));
       } else if (input.name === "system") {
-        if (input.arg) system = input.arg;
+        if (input.arg) {
+          system = input.arg;
+          history[0] = startConversation(root, system)[0];
+        }
         process.stderr.write(dim(system ? `System: ${system}\n` : "No system instructions.\n"));
       } else process.stderr.write(dim(`Unknown command /${input.name}. /help lists them.\n`));
     } else if (input.kind === "say") {
+      forgetThinking(history);
+      const before = history.length;
       history.push({ role: "user", content: input.text });
       answering = new AbortController();
       try {
-        const messages: Message[] = [...(system ? [{ role: "system" as const, content: system }] : []), ...history];
-        const reply = await streamReply(base, { model, messages }, answering.signal);
-        history.push({ role: "assistant", content: reply.content });
-        model = reply.model;
-        used = reply.usage?.total_tokens ?? used;
+        // The agent loop adds the answer, plus any tool calls and their results, to the history.
+        const turn = await agentTurn(base, model, history, root, answering.signal);
+        model = turn.model;
+        used = turn.reply.usage?.total_tokens ?? used;
         const limit = await contextLimit(base, model);
         if (limit) process.stderr.write(dim(`${meter(used, limit)}${used / limit > 0.8 ? "  · nearly full: /clear starts fresh" : ""}\n`));
       } catch (err) {
-        history.pop(); // the question wasn't answered, so it isn't part of the conversation
+        history.length = before; // the question wasn't answered: drop it, and any tool calls it started
         process.stderr.write(answering.signal.aborted ? dim("\n(stopped; that message was left out of the conversation)\n") : `${(err as Error).message}\n`);
       } finally {
         answering = undefined;

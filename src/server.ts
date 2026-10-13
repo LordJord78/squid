@@ -229,17 +229,20 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
         res.write(sseEvent(JSON.stringify({ ...head, choices: [], usage: { prompt_tokens, completion_tokens, total_tokens, completion_tokens_details: { reasoning_tokens: reasoningTokens } } })));
         continue;
       }
-      const choices = [];
       for (const c of chunk.choices) {
         // Drop empty fields and the role: llama.cpp opens with an event that says only {role, content: null}.
         // LM Studio instead puts the role on the first event that has words in it.
         const delta: Record<string, any> = Object.fromEntries(Object.entries(c.delta ?? {}).filter(([key, value]) => value !== null && key !== "role"));
         thinking += delta.reasoning_content ?? "";
-        if (!Object.keys(delta).length && c.finish_reason == null) continue; // nothing to pass on yet
-        choices.push({ index: c.index, delta: roleSent ? delta : { role: "assistant", ...delta }, logprobs: c.logprobs ?? null, finish_reason: c.finish_reason ?? null });
-        roleSent = true;
+        const deltas = delta.tool_calls ? lmstudioToolDeltas(delta) : [delta];
+        deltas.forEach((d, i) => {
+          const last = i === deltas.length - 1; // finish_reason goes on the last event only
+          if (!Object.keys(d).length && (!last || c.finish_reason == null)) return; // nothing to pass on yet
+          const choice = { index: c.index, delta: roleSent ? d : { role: "assistant", ...d }, logprobs: c.logprobs ?? null, finish_reason: last ? c.finish_reason ?? null : null };
+          res.write(sseEvent(JSON.stringify({ ...head, choices: [choice] })));
+          roleSent = true;
+        });
       }
-      if (choices.length) res.write(sseEvent(JSON.stringify({ ...head, choices })));
     }
   } catch {
     // The engine went away mid-answer. Cut the connection rather than send [DONE], so the app can tell
@@ -247,6 +250,23 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
     return res.destroy();
   }
   res.end(sseEvent("[DONE]"));
+}
+
+// A streamed tool call, LM Studio's way (observed): one event names the tool with empty arguments, then
+// the arguments follow, every piece marked type "function". llama.cpp sends the first piece of the
+// arguments together with the name, and leaves out the type, so its events are reshaped.
+function lmstudioToolDeltas({ tool_calls, ...rest }: Record<string, any>): Record<string, any>[] {
+  const deltas: Record<string, any>[] = Object.keys(rest).length ? [rest] : [];
+  for (const piece of tool_calls) {
+    const args = piece.function?.arguments ?? "";
+    if (piece.function?.name) {
+      deltas.push({ tool_calls: [{ index: piece.index, id: piece.id, type: "function", function: { name: piece.function.name, arguments: "" } }] });
+      if (args) deltas.push({ tool_calls: [{ index: piece.index, type: "function", function: { arguments: args } }] });
+    } else {
+      deltas.push({ tool_calls: [{ index: piece.index, type: "function", function: { arguments: args } }] });
+    }
+  }
+  return deltas;
 }
 
 // Opens a request to an engine; resolves as soon as its reply starts arriving. node:http rather than

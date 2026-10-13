@@ -30,9 +30,11 @@ async function fakeEngine(): Promise<{ server: Server; engine: Engine }> {
     let body = "";
     for await (const chunk of req) body += chunk;
     if (req.url === "/tokenize") return res.end(JSON.stringify({ tokens: new Array(129).fill(0) }));
-    if (!JSON.parse(body).stream) return res.end(JSON.stringify(golden("llamacpp/chat-nonstream.json")));
+    const request = JSON.parse(body);
+    if (!request.stream) return res.end(JSON.stringify(golden("llamacpp/chat-nonstream.json")));
     res.writeHead(200, { "Content-Type": "text/event-stream" });
-    const bytes = readFileSync(new URL("../golden/llamacpp/chat-stream-usage.sse", import.meta.url));
+    const recording = request.tools ? "chat-tools-stream.sse" : "chat-stream-usage.sse";
+    const bytes = readFileSync(new URL(`../golden/llamacpp/${recording}`, import.meta.url));
     for (let i = 0; i < bytes.length; i += 100) res.write(bytes.subarray(i, i + 100));
     res.end();
   });
@@ -144,6 +146,32 @@ test("a streamed reply is passed on event by event, in LM Studio's shape", async
       assert.equal(new Set(ours.map((c) => c.id)).size, 1, "one id for the whole reply");
       assert.equal(ours.map((c) => c.choices[0]?.delta.content ?? "").join(""), "pong");
       assert.equal(ours.at(-1).usage.completion_tokens_details.reasoning_tokens, 129);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("a streamed tool call is reshaped into LM Studio's three parts", async () => {
+  const { server, engine } = await fakeEngine();
+  try {
+    await withServer({ shelf: () => [], engines: () => [engine] }, async (base) => {
+      const ask = { model: "qwen/qwen3.5-9b", messages: [{ role: "user", content: "Use the read_file tool to open README.md." }], tools: [{ type: "function" }], stream: true };
+      const ours = sseEvents(await (await post(`${base}/v1/chat/completions`, JSON.stringify(ask))).text());
+      const lmstudio = sseEvents(readFileSync(new URL("../golden/lmstudio/chat-tools-stream.sse", import.meta.url), "utf8"));
+      const toolEvents = (chunks: any[]) => chunks.filter((c) => c.choices[0]?.delta.tool_calls);
+      const [oursNamed, ...oursArgs] = toolEvents(ours);
+      const [theirsNamed, theirsArgs] = toolEvents(lmstudio);
+      // 1. the name, with empty arguments
+      assert.deepEqual(shape(oursNamed), shape(theirsNamed));
+      assert.equal(oursNamed.choices[0].delta.tool_calls[0].function.arguments, "");
+      // 2. the arguments in pieces, each marked type "function"
+      for (const piece of oursArgs) assert.deepEqual(shape(piece), shape(theirsArgs));
+      const args = oursArgs.map((c: any) => c.choices[0].delta.tool_calls[0].function.arguments).join("");
+      assert.deepEqual(JSON.parse(args), { path: "README.md" });
+      // 3. an empty event that says why it stopped
+      assert.equal(ours.at(-1).choices[0].finish_reason, "tool_calls");
+      assert.deepEqual(ours.at(-1).choices[0].delta, {});
     });
   } finally {
     server.close();
