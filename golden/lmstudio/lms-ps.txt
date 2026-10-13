@@ -1,0 +1,5 @@
+
+IDENTIFIER         MODEL              STATUS    SIZE       CONTEXT    PARALLEL    DEVICE    TTL
+qwen/qwen3.5-9b    qwen/qwen3.5-9b    IDLE      6.55 GB    8192       4           Local        
+
+

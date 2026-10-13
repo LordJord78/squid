@@ -1,0 +1,29 @@
+{
+  "id": "chatcmpl-h5o69gnalds7u3e3ujpg",
+  "object": "chat.completion",
+  "created": 1791853339,
+  "model": "qwen/qwen3.5-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "pong",
+        "reasoning_content": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for a reply that consists of *exactly one word*, and that word must be \"pong\".\n\n2.  **Check Constraints:**\n    *   Constraint 1: Exactly one word.\n    *   Constraint 2: The word must be \"pong\".\n\n3.  **Formulate Output:** The only valid output is \"pong\".\n\n4.  **Final Verification:** Does \"pong\" count as exactly one word? Yes. Is it the requested word? Yes.\n\n5.  **Execute:** Output \"pong\".\n",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 17,
+    "completion_tokens": 133,
+    "total_tokens": 150,
+    "completion_tokens_details": {
+      "reasoning_tokens": 129
+    }
+  },
+  "stats": {},
+  "system_fingerprint": "qwen/qwen3.5-9b"
+}

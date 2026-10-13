@@ -1,0 +1,46 @@
+{
+  "id": "chatcmpl-3x3e94o9unk7r9e0rkh1z",
+  "object": "chat.completion",
+  "created": 1791853343,
+  "model": "qwen/qwen3.5-9b",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "pong",
+        "reasoning_content": "Thinking Process:\n\n1.  **Analyze the Request:** The user is asking for a reply that consists of *exactly one word*, and that word must be \"pong\".\n\n2.  **Check Constraints:**\n    *   Constraint 1: Exactly one word.\n    *   Constraint 2: The word must be \"pong\".\n\n3.  **Formulate Output:** The only valid output is \"pong\".\n\n4.  **Final Verification:** Does \"pong\" count as exactly one word? Yes. Is it the requested word? Yes.\n\n5.  **Execute:** Output \"pong\".\n",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop"
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 17,
+    "completion_tokens": 133,
+    "total_tokens": 150,
+    "completion_tokens_details": {
+      "reasoning_tokens": 129
+    }
+  },
+  "stats": {
+    "tokens_per_second": 115.93683550407492,
+    "time_to_first_token": 0.040341,
+    "generation_time": 1.1788919999999998,
+    "stop_reason": "eosFound"
+  },
+  "model_info": {
+    "arch": "qwen35",
+    "quant": "Q4_K_M",
+    "format": "gguf",
+    "context_length": 8192
+  },
+  "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+      "gguf"
+    ]
+  }
+}

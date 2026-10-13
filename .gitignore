@@ -1,0 +1,4 @@
+node_modules/
+# llama.cpp engine binaries are downloaded here, not committed
+runtime/
+*.log
