@@ -11,7 +11,7 @@ export type Kind = "deny" | "ask" | "allow";
 export type Rule = { text: string; tool: string; specifier?: string };
 // What the agent wants to do. For a file, `path` is what it asked for and `real` is where that leads
 // after links are followed (step 08); they differ when a link is involved.
-export type Request = { tool: Tool; path?: string; real?: string; command?: string };
+export type Request = { tool: Tool; path?: string; real?: string; command?: string; readOnly?: boolean }; // readOnly: a command that only looks (step 11)
 export type Decision = { outcome: Kind; reason: string };
 export type Rulebook = { deny: Rule[]; ask: Rule[]; allow: Rule[]; root: string; home?: string };
 
@@ -68,8 +68,11 @@ export function decide(request: Request, book: Rulebook): Decision {
   if (ask) return { outcome: "ask", reason: `rule ${ask.text} says ask` };
   const allow = book.allow.find((rule) => matches(rule, request, book, "allow", "both"));
   if (allow) return { outcome: "allow", reason: `allowed by rule ${allow.text}` };
-  // No rule matched: manual mode's defaults. Reads run; edits and commands ask. (Step 12 adds modes.)
-  return request.tool === "Read" ? { outcome: "allow", reason: "reading is allowed" } : { outcome: "ask", reason: "changes and commands need your OK" };
+  // No rule matched: manual mode's defaults. Reads and read-only commands run; edits and other commands
+  // ask. (Step 12 adds modes.)
+  if (request.tool === "Read") return { outcome: "allow", reason: "reading is allowed" };
+  if (request.tool === "Bash" && request.readOnly) return { outcome: "allow", reason: "a read-only command" };
+  return { outcome: "ask", reason: "changes and commands need your OK" };
 }
 
 function matches(rule: Rule, request: Request, book: Rulebook, kind: Kind, need: "either" | "both"): boolean {

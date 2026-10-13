@@ -1,10 +1,12 @@
 // The agent's tools: what the model may do in the folder you started Squid in. It can look (list, read,
-// search) and, since step 10, change files (edit, write), and every change is shown to you first.
+// search), change files (edit, write; step 10) and run programs (step 11), and every change and every
+// command that isn't read-only is shown to you first.
 // Every path must stay inside that folder (step 08) and pass the rulebook (step 09).
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { decide, loadRulebook, type Rulebook } from "./rules.ts";
 import { renderDiff } from "./diff.ts";
+import { CommandError, describeRun, insideFolder, isReadOnly, isShell, pathArguments, removesCriticalPath, resolveCommand, runCommand, splitCommand, type Command } from "./shell.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string }; // arguments: JSON text, as the model wrote it
 
@@ -28,6 +30,9 @@ export const TOOLS = [
   tool("write_file", "Create a new text file, or replace a whole file (read an existing file first). The user sees the change and approves or declines it.",
     { path: PATH, content: { type: "string", description: "The whole new content of the file" } },
     ["path", "content"]),
+  tool("run_command", "Run one program in the project folder and get its output, e.g. `git status`, `npm test`, `node --version`. There is no shell: &&, ||, ;, |, >, < and $VAR don't work, so run commands one at a time. Read-only commands (git status, diff, log, show; version checks) run straight away; anything else is shown to the user to approve.",
+    { command: { type: "string" }, timeout_seconds: { type: "integer", description: "Stop it after this many seconds (default 120, at most 600)" } },
+    ["command"]),
 ];
 
 // A problem with a request (wrong path, not allowed, declined). It goes back to the model as the tool's
@@ -44,7 +49,14 @@ export const nobodyToAsk: Approver = async () => ({ ok: false, feedback: "nobody
 // One working session: the folder, its rules, who approves, and which files the model has read, with
 // each file's modification time at that moment. Edits need a fresh read, so the model can't change a
 // file it hasn't looked at, or overwrite changes it hasn't seen.
-export type Session = { root: string; book: Rulebook; approve: Approver; seen: Map<string, number>; show: (text: string) => void };
+export type Session = {
+  root: string;
+  book: Rulebook;
+  approve: Approver;
+  seen: Map<string, number>;
+  show: (text: string) => void;
+  signal?: AbortSignal; // Ctrl+C: stops a running command too (step 11)
+};
 export function newSession(root: string, approve: Approver = nobodyToAsk, show: (text: string) => void = () => {}): Session {
   return { root, book: loadRulebook(root), approve, seen: new Map(), show };
 }
@@ -65,6 +77,7 @@ export async function runTool(session: Session, call: Pick<ToolCall, "name" | "a
       : call.name === "search" ? await search(session, text(args.text), args.path ?? ".")
       : call.name === "edit_file" ? await editFile(session, text(args.path), text(args.old_text), text(args.new_text), args.replace_all === true)
       : call.name === "write_file" ? await writeFile(session, text(args.path), text(args.content))
+      : call.name === "run_command" ? await runCommandTool(session, text(args.command), args.timeout_seconds ?? undefined)
       : `Error: there's no tool called ${call.name}. The tools are ${TOOLS.map((t) => t.function.name).join(", ")}.`;
     // Whatever a tool returns is added to the conversation, and the context window is finite (step 07).
     return result.length > 24_000 ? `${result.slice(0, 24_000)}\n… (cut: ${result.length - 24_000} more characters)` : result;
@@ -252,6 +265,46 @@ async function writeFile(session: Session, path: string, content: string): Promi
   return `${exists ? "Rewrote" : "Created"} ${path} (${lines} line${lines === 1 ? "" : "s"}).`;
 }
 
+// --- running commands (step 11) ---
+
+async function runCommandTool(session: Session, line: string, timeout = 120): Promise<string> {
+  let command: Command;
+  try {
+    command = resolveCommand(splitCommand(line), session.root);
+  } catch (err) {
+    if (err instanceof CommandError) throw new ToolError(err.message);
+    throw err;
+  }
+  const root = realpathSync.native(session.root);
+  const critical = removesCriticalPath(command, root);
+  if (critical) throw new ToolError(`${command.text}: removing ${critical} is never allowed`);
+  // A path in the arguments counts as reading that path: a secret is refused, as if read_file asked.
+  const paths = pathArguments(command, root);
+  for (const path of paths.local) {
+    const verdict = decide({ tool: "Read", path, real: path }, session.book);
+    if (verdict.outcome === "deny") throw new ToolError(`${command.text}: ${verdict.reason}`);
+  }
+  const outside = paths.local.filter((path) => !insideFolder(root, path));
+  const readOnly = isReadOnly(command) && !outside.length && !paths.network.length;
+  const verdict = decide({ tool: "Bash", command: command.text, readOnly }, session.book);
+  if (verdict.outcome === "deny") throw new ToolError(`${command.text}: ${verdict.reason}`);
+  // A shell can run anything at all, so it always asks, whatever an allow rule says.
+  if (verdict.outcome === "ask" || isShell(command)) {
+    const reason = isShell(command) ? `${command.name} is a shell: it can run anything, so it always needs your OK`
+      : paths.network.length ? `${paths.network[0]} is a network path: opening it can send your Windows login to that server`
+      : outside.length ? `it mentions ${outside[0]}, outside the project`
+      : verdict.reason;
+    const answer = await session.approve({ title: `Run ${command.text}`, reason, preview: `in ${root}\n> ${command.text}\n(program: ${command.program})` });
+    if (!answer.ok) throw new ToolError(`the user declined: Run ${command.text}${answer.feedback ? `. Their instructions: ${answer.feedback}` : ""}`);
+  }
+  const seconds = Math.min(Math.max(1, Math.floor(timeout)), 600);
+  const ran = await runCommand(command, root, seconds, session.signal);
+  // A command that isn't read-only may have changed files (a formatter, a code generator): the model's
+  // picture of every file is now possibly stale, so edits need a fresh read again (step 10).
+  if (!readOnly) session.seen.clear();
+  return describeRun(ran, seconds);
+}
+
 // The change as a coloured diff, at most 80 lines of it.
 function preview(before: string, after: string): string {
   const lines = renderDiff(before, after, { color: process.stderr.isTTY }).split("\n");
@@ -276,5 +329,6 @@ export function describeCall(call: Pick<ToolCall, "name" | "arguments">): string
   }
   if (call.name === "search") return `search("${args.text ?? ""}"${args.path ? ` in ${args.path}` : ""})`;
   if (["list_files", "read_file", "edit_file", "write_file"].includes(call.name)) return `${call.name}(${args.path ?? "."})`;
+  if (call.name === "run_command") return `run_command(${args.command ?? ""})`;
   return `${call.name}(${call.arguments})`;
 }

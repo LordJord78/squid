@@ -12,8 +12,8 @@ export const MAX_ROUNDS = 25;
 export function startConversation(root: string, extra?: string): Message[] {
   const prompt = [
     `You are Squid, an assistant running on this computer, working in the folder ${root}.`,
-    "You can look at its files with list_files, read_file and search, and change them with edit_file and write_file. Paths are relative to that folder; nothing outside it can be opened. You cannot run commands.",
-    "Every change is shown to the user, who approves or declines it. If they decline, don't try the same change again; follow their instructions if they gave any.",
+    "You can look at its files with list_files, read_file and search, change them with edit_file and write_file, and run programs with run_command (one at a time: there is no shell, so no &&, | or >). Paths are relative to that folder; nothing outside it can be opened.",
+    "Every change and every command that isn't read-only is shown to the user, who approves or declines it. If they decline, don't try the same change again; follow their instructions if they gave any.",
     "Some files are off limits (secrets, holdout data, and anything the user's rules deny). If a tool says so, don't try to get around it.",
     "When a question is about the project, look before you answer, and say which files you read. Be concise.",
   ].join("\n");
@@ -32,6 +32,7 @@ export async function agentTurn(
   out: Output = terminal,
 ): Promise<{ model: string; reply: Reply }> {
   session.book = loadRulebook(session.root); // rules edited mid-chat apply from the next question (step 09)
+  session.signal = signal; // Ctrl+C also stops a command that's running (step 11)
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const reply = await streamReply(base, { model, messages, tools: TOOLS }, signal, out);
     model = reply.model;
