@@ -8,11 +8,14 @@ import { startServer, DEFAULT_PORT } from "./server.ts";
 import { ensureServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
 import { readConfig } from "./config.ts";
 import { ask } from "./ask.ts";
+import { chat } from "./chat.ts";
 
 const [command, ...args] = process.argv.slice(2);
 
 const USAGE = `usage:
-  squid                     start your local AI: the server, plus your default model
+  squid                     start your local AI (server + default model) and chat with it
+  squid chat [--model NAME] [--system TEXT]
+                            a conversation in the terminal (/help inside for commands)
   squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
@@ -117,10 +120,18 @@ switch (command) {
     }
     progress.clear();
     const idle = engine.ttlSeconds ? `; unloads after ${Math.round(engine.ttlSeconds / 60)} min unused` : "";
-    console.log(`${engine.identifier} is ready (${engine.contextLength.toLocaleString("en-US")}-token context${idle}).\n`);
-    console.log(`  squid ask "…"         ask it something`);
-    console.log(`  squid ps              what's loaded`);
-    console.log(`  squid unload --all    free the GPU (for games)`);
+    console.log(`${engine.identifier} is ready (${engine.contextLength.toLocaleString("en-US")}-token context${idle}).`);
+    // At a keyboard, go straight into the chat. From a script (input piped in), booting is the whole job.
+    if (process.stdin.isTTY) await chat({ model: engine.identifier });
+    break;
+  }
+  case "chat": {
+    const { values } = parseArgs({ args, options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" } } });
+    try {
+      await chat(values);
+    } catch (err) {
+      fail((err as Error).message);
+    }
     break;
   }
   case "help":
