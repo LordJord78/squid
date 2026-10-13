@@ -5,7 +5,10 @@ import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
 import { dim, type Message } from "./reply.ts";
 import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
-import { newSession, nobodyToAsk } from "./tools.ts";
+import { relative } from "node:path";
+import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
+import { applyUndo, planUndo, undoNote } from "./undo.ts";
+import { renderDiff } from "./diff.ts";
 import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { readConfig } from "./config.ts";
@@ -32,6 +35,7 @@ const HELP = `/clear            forget the conversation and start a new one
 /model [name]     show or switch the model (it loads if needed)
 /mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab)
 /system [text]    show or set instructions the model follows from the next message
+/undo             put back the files the agent changed for your last message (again: further back)
 /exit             leave (so does Ctrl+D, or Ctrl+C at an empty prompt)
 Ctrl+C while it's answering stops the answer.`;
 
@@ -52,6 +56,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
   let history: Message[] = startConversation(root, system); // [0] is the system message
   let used = 0; // tokens the conversation takes up, from the last reply's usage count
   let answering: AbortController | undefined;
+  let pendingNote: string | undefined; // told to the model with your next message (after an /undo)
 
   const rl = createInterface({ input: process.stdin, output: process.stdout, prompt: "› " });
   // Piped-in input ends early (all lines arrive at once), and the reader closes while answers are still
@@ -102,6 +107,9 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
           model = await pickModel(base, input.arg).catch((err: Error) => (process.stderr.write(`${err.message}\n`), model));
         }
         process.stderr.write(dim(`Model: ${model ?? "your default model"}\n`));
+      } else if (input.name === "undo") {
+        const done = await undoLast(session, root, keyboard ? question : undefined);
+        if (done) pendingNote = done; // the model hears about it with your next message
       } else if (input.name === "mode") {
         const wanted = input.arg.toLowerCase();
         if (MODES.includes(wanted as Mode)) session.mode = wanted as Mode;
@@ -117,7 +125,8 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
     } else if (input.kind === "say") {
       forgetThinking(history);
       const before = history.length;
-      history.push({ role: "user", content: input.text });
+      history.push({ role: "user", content: pendingNote ? `${pendingNote}\n\n${input.text}` : input.text });
+      pendingNote = undefined;
       answering = new AbortController();
       try {
         // The agent loop adds the answer, plus any tool calls and their results, to the history.
@@ -136,6 +145,32 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
     prompt();
   }
   rl.close();
+}
+
+// /undo: shows what would be put back, asks (at a keyboard), and does it. Returns a note for the model,
+// whose picture of those files is now out of date, or undefined if nothing was undone.
+async function undoLast(session: Session, root: string, question?: (prompt: string) => Promise<string | undefined>): Promise<string | undefined> {
+  const plan = planUndo(session.checkpoints);
+  if (!plan) {
+    process.stderr.write(dim("Nothing to undo: the agent hasn't changed any files in this chat. (Changes made by commands can't be undone here; use git.)\n"));
+    return undefined;
+  }
+  const name = (file: string) => relative(root, file) || file;
+  const lines = [`Undo "${plan.checkpoint.label}":`];
+  for (const s of plan.restore) {
+    lines.push(s.before === null ? `  ${name(s.file)}: delete it (the agent created it)` : `  ${name(s.file)}: put back as it was`);
+    if (s.before !== null) lines.push(renderDiff(s.after ?? "", s.before, { context: 1, color: process.stderr.isTTY }).split("\n").slice(0, 12).map((l) => `    ${l}`).join("\n"));
+  }
+  for (const s of plan.skipped) lines.push(`  ${name(s.file)}: changed since the agent wrote it, so it's left alone`);
+  process.stderr.write(`${lines.join("\n")}\n`);
+  if (!plan.restore.length) return undefined;
+  if (question && !/^(y|yes)$/i.test(((await question("Undo these? y = yes · n = no › ")) ?? "").trim())) {
+    process.stderr.write(dim("Nothing undone.\n"));
+    return undefined;
+  }
+  applyUndo(session.checkpoints, plan, writeAtomically);
+  process.stderr.write(dim(`Undid ${plan.restore.length} file${plan.restore.length === 1 ? "" : "s"}.\n`));
+  return undoNote(plan.checkpoint.label, plan.restore.map((s) => name(s.file)));
 }
 
 // The model's context size, as the server reports it for a loaded model (/api/v0/models).

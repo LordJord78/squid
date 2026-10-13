@@ -6,6 +6,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { decide, loadRulebook, parseRule, type Mode, type Rule, type Rulebook } from "./rules.ts";
 import { renderDiff } from "./diff.ts";
+import { remember, wrote, type Checkpoint } from "./undo.ts";
 import { CommandError, describeRun, insideFolder, isReadOnly, isShell, pathArguments, removesCriticalPath, resolveCommand, runCommand, splitCommand, type Command } from "./shell.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string }; // arguments: JSON text, as the model wrote it
@@ -71,6 +72,7 @@ export type Session = {
   mode: Mode; // manual, auto or plan (step 12); tools can change it (an "always" answer, an approved plan)
   remembered: Rule[]; // commands you said "don't ask again" for, this session only
   choosePlan: PlanChooser;
+  checkpoints: Checkpoint[]; // copies of files from before the agent changed them, for /undo (step 13)
 };
 export function newSession(
   root: string,
@@ -78,7 +80,10 @@ export function newSession(
   show: (text: string) => void = () => {},
   options: { mode?: Mode; choosePlan?: PlanChooser } = {},
 ): Session {
-  return { root, book: loadRulebook(root), approve, seen: new Map(), show, mode: options.mode ?? "manual", remembered: [], choosePlan: options.choosePlan ?? nobodyToChoose };
+  return {
+    root, book: loadRulebook(root), approve, seen: new Map(), show, mode: options.mode ?? "manual", remembered: [],
+    choosePlan: options.choosePlan ?? nobodyToChoose, checkpoints: [],
+  };
 }
 
 // Runs one tool call and returns what the model gets to see, always as text.
@@ -272,7 +277,9 @@ async function editFile(session: Session, path: string, oldText: string, newText
   // replacement treats "$&" and "$1" in the new text as special codes and would mangle them.
   const after = replaceAll ? before.split(find).join(put) : before.replace(find, () => put);
   await permit(session, "Edit", path, file, `Edit ${path}`, preview(before, after));
+  remember(session.checkpoints, file); // a copy of how it was, for /undo
   writeAtomically(file, after);
+  wrote(session.checkpoints, file, after);
   session.seen.set(file, statSync(file).mtimeMs); // it may edit again without re-reading its own change
   return `Edited ${path}: ${replaceAll ? count : 1} replacement${replaceAll && count > 1 ? "s" : ""}.`;
 }
@@ -286,7 +293,9 @@ async function writeFile(session: Session, path: string, content: string): Promi
   const after = exists && before.includes("\r\n") ? content.replace(/\r?\n/g, "\r\n") : content;
   await permit(session, "Edit", path, file, `${exists ? "Overwrite" : "Create"} ${path}`, preview(before, after));
   mkdirSync(dirname(file), { recursive: true });
+  remember(session.checkpoints, file); // "didn't exist" counts too: undo deletes the new file
   writeAtomically(file, after);
+  wrote(session.checkpoints, file, after);
   session.seen.set(file, statSync(file).mtimeMs);
   const lines = after.split(/\r?\n/).length;
   return `${exists ? "Rewrote" : "Created"} ${path} (${lines} line${lines === 1 ? "" : "s"}).`;
@@ -361,7 +370,7 @@ function preview(before: string, after: string): string {
 
 // Writes to a temporary file beside the real one, then renames it into place. A rename is all or
 // nothing, so the file is never left half-written, even if Squid crashes in the middle.
-function writeAtomically(file: string, text: string): void {
+export function writeAtomically(file: string, text: string): void {
   const temp = `${file}.squid-${process.pid}.tmp`;
   writeFileSync(temp, text);
   renameSync(temp, file);

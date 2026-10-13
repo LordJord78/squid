@@ -2,6 +2,7 @@
 // them and send back what they returned; repeat until the model answers in words.
 import { describeCall, runTool, toolsFor, type Session } from "./tools.ts";
 import { loadRulebook, type Mode } from "./rules.ts";
+import { startCheckpoint, withoutNote } from "./undo.ts";
 import { dim, streamReply, terminal, type Message, type Output, type Reply } from "./reply.ts";
 
 // A model that keeps calling tools without ever answering is stuck. The AI Lab's benchmark saw the
@@ -47,6 +48,8 @@ export async function agentTurn(
   session.book = loadRulebook(session.root); // rules edited mid-chat apply from the next question (step 09)
   session.book.allow.push(...session.remembered); // plus commands you said "don't ask again" for (step 12)
   session.signal = signal; // Ctrl+C also stops a command that's running (step 11)
+  // Each of your messages starts a checkpoint: /undo puts back what this turn changes (step 13).
+  startCheckpoint(session.checkpoints, withoutNote([...messages].reverse().find((m) => m.role === "user")?.content ?? ""));
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     // The mode can change during a turn (an approved plan), so the tools and the note are fresh each round.
     const reply = await streamReply(base, { model, messages: withMode(messages, session.mode), tools: toolsFor(session.mode) }, signal, out);
