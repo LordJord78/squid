@@ -16,6 +16,17 @@
       ]
     },
     {
+      "id": "smollm2-135m-instruct",
+      "object": "model",
+      "type": "llm",
+      "publisher": "bartowski",
+      "arch": "llama",
+      "compatibility_type": "gguf",
+      "quantization": "Q8_0",
+      "state": "not-loaded",
+      "max_context_length": 8192
+    },
+    {
       "id": "qwen3.8-27b-text",
       "object": "model",
       "type": "llm",

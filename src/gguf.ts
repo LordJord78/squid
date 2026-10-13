@@ -9,7 +9,8 @@ export type GgufArray = { arrayOf: number; length: number; items?: GgufValue[] }
 export type GgufValue = number | bigint | boolean | string | GgufArray;
 export type GgufHeader = { version: number; tensorCount: number; metadata: Map<string, GgufValue>; headerBytes: number; fileBytes: number };
 
-// Arrays longer than this (like a 150,000-word vocabulary) are walked past but not kept.
+// Arrays longer than this (like a 150,000-word vocabulary) are walked past but not kept, unless asked for
+// by name (the tokenizer, step 15, asks for the vocabulary and its merge rules).
 const KEEP_ARRAYS_UP_TO = 32;
 
 // Hands out the file's bytes in order, reading 1 MiB at a time from disk as it goes.
@@ -59,7 +60,7 @@ class ByteReader {
   }
 }
 
-function readValue(r: ByteReader, type: number, keep = true): GgufValue {
+function readValue(r: ByteReader, type: number, keep = true, whole = false): GgufValue {
   switch (type) {
     case T.U8: return r.u8();
     case T.I8: return r.read(1, (b, at) => b.readInt8(at));
@@ -76,7 +77,7 @@ function readValue(r: ByteReader, type: number, keep = true): GgufValue {
     case T.ARRAY: {
       const arrayOf = r.u32();
       const length = Number(r.u64());
-      const keepItems = keep && length <= KEEP_ARRAYS_UP_TO;
+      const keepItems = keep && (whole || length <= KEEP_ARRAYS_UP_TO);
       const items: GgufValue[] = [];
       for (let i = 0; i < length; i++) {
         const item = readValue(r, arrayOf, keepItems);
@@ -88,7 +89,8 @@ function readValue(r: ByteReader, type: number, keep = true): GgufValue {
   }
 }
 
-export function readGgufHeader(path: string): GgufHeader {
+// `arrays`: keys whose arrays are kept whole, however long.
+export function readGgufHeader(path: string, arrays: string[] = []): GgufHeader {
   const fd = openSync(path, "r");
   try {
     const r = new ByteReader(fd);
@@ -101,7 +103,7 @@ export function readGgufHeader(path: string): GgufHeader {
     const metadata = new Map<string, GgufValue>();
     for (let i = 0; i < kvCount; i++) {
       const key = r.string();
-      metadata.set(key, readValue(r, r.u32()));
+      metadata.set(key, readValue(r, r.u32(), true, arrays.includes(key)));
     }
     return { version, tensorCount, metadata, headerBytes: r.consumed, fileBytes: fstatSync(fd).size };
   } finally {

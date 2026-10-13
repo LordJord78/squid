@@ -11,6 +11,8 @@ import { MODES, type Mode } from "./rules.ts";
 import { ask } from "./ask.ts";
 import { chat } from "./chat.ts";
 import { web } from "./web.ts";
+import { encode, loadVocab, piece } from "./tokenizer.ts";
+import { readFileSync } from "node:fs";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -20,7 +22,9 @@ const USAGE = `usage:
                             a conversation in the terminal (/help inside; Shift+Tab changes mode)
   squid web [--model NAME] [--mode manual|auto|plan] [--port N] [--no-open]
                             the same, in your browser, for the folder you're in (Ctrl+C stops it)
-  squid ls                 list your models
+  squid tokenize <model> "<text>" [--ids] [--no-special] [--file PATH]
+                            the tokens a model reads for some text (its own vocabulary, no GPU)
+  squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
                             start the engine with a model ("27b" is enough if only one name contains it)
@@ -35,8 +39,9 @@ const USAGE = `usage:
 // LM Studio shows sizes in decimal units (1 GB = 1,000,000,000 bytes), MB below 1 GB.
 const size = (bytes: number) => (bytes < 1e9 ? `${(bytes / 1e6).toFixed(2)} MB` : `${(bytes / 1e9).toFixed(2)} GB`);
 
-// LM Studio prettifies some architecture names in its table. These two are the ones seen on this PC.
-const ARCH_LABELS: Record<string, string> = { qwen2: "Qwen2", "nomic-bert": "Nomic BERT" };
+// LM Studio prettifies some architecture names in its table. These are the ones seen on this PC
+// ("llama" since SmolLM2 arrived in step 15; "qwen35" it leaves as it is).
+const ARCH_LABELS: Record<string, string> = { qwen2: "Qwen2", "nomic-bert": "Nomic BERT", llama: "Llama" };
 
 // Problems the user can fix (wrong file, missing argument) print one line, not a stack trace.
 function fail(message: string): never {
@@ -153,6 +158,36 @@ switch (command) {
       fail((err as NodeJS.ErrnoException).code === "EADDRINUSE" ? `port ${values.port} is already in use` : (err as Error).message);
     }
     break; // the page's server keeps this program running until Ctrl+C
+  }
+  case "tokenize": {
+    const { values, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { ids: { type: "boolean" }, "no-special": { type: "boolean" }, file: { type: "string", short: "f" } },
+    });
+    if (!positionals[0] || (positionals.length < 2 && !values.file)) fail('usage: squid tokenize <model> "<text>" [--ids] [--no-special] [--file PATH]');
+    const model = pickModel(positionals[0]);
+    let vocab, text;
+    try {
+      vocab = loadVocab(model.path);
+      text = values.file ? readFileSync(values.file, "utf8") : positionals.slice(1).join(" ");
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    const ids = encode(vocab, text, { special: !values["no-special"] });
+    if (values.ids) {
+      console.log(`[${ids.join(", ")}]`); // the same form as llama-tokenize --ids
+      break;
+    }
+    // At a terminal: the text with each token on its own colour, like a tokenizer playground.
+    if (process.stdout.isTTY) {
+      const COLOURS = [54, 24, 89, 23]; // purple, blue, plum, teal (256-colour backgrounds)
+      const shown = ids.map((id, i) => `\x1b[48;5;${COLOURS[i % COLOURS.length]}m\x1b[97m${piece(vocab, id).replace(/\n/g, "↵\n")}\x1b[0m`);
+      console.log(`${shown.join("")}\n`);
+    }
+    console.log(`${ids.length} token${ids.length === 1 ? "" : "s"} (${model.key}, ${vocab.tokens.length.toLocaleString("en-US")}-token vocabulary)`);
+    for (const id of ids) console.log(`${String(id).padStart(7)} -> '${piece(vocab, id)}'`); // as llama-tokenize lists them
+    break;
   }
   case "help":
   case "--help":

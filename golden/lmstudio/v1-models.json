@@ -1,6 +1,11 @@
 {
   "data": [
     {
+      "id": "smollm2-135m-instruct",
+      "object": "model",
+      "owned_by": "organization_owner"
+    },
+    {
       "id": "qwen3.8-27b-text",
       "object": "model",
       "owned_by": "organization_owner"

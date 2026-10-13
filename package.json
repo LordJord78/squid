@@ -14,6 +14,7 @@
     "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
     "check": "tsc --noEmit",
     "capture:lmstudio": "pwsh -NoProfile -File golden/capture-lmstudio.ps1",
+    "capture:tokens": "node golden/capture-tokens.ts",
     "engine:get": "pwsh -NoProfile -File scripts/get-engine.ps1"
   },
   "devDependencies": {

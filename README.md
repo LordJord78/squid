@@ -35,6 +35,7 @@ squid                     # start the server in the background and load your def
 squid chat                # the agent in the terminal, working on this folder
 squid web                 # the same in your browser (a private link for this folder; Ctrl+C stops it)
 squid ask "…"             # one question, streamed
+squid tokenize 27b "…"    # the tokens a model reads for some text (from its own vocabulary)
 squid ps                  # what's loaded (models loaded on demand unload after 60 min unused)
 squid unload --all        # free the GPU
 squid server stop         # stop the background server
@@ -50,6 +51,7 @@ The OpenAI-style API is at `http://127.0.0.1:1235/v1` (LM Studio uses 1234).
 npm test                  # every test
 npm run check             # type check
 npm run capture:lmstudio  # re-record the real LM Studio into golden/lmstudio/
+npm run capture:tokens    # re-record llama.cpp's tokenizer into golden/llamacpp/ (CPU only)
 ```
 
 Replay any step with `git log --oneline` and `git show <sha>`.
@@ -61,4 +63,5 @@ Replay any step with `git log --oneline` and `git show <sha>`.
 | `src/` | Squid itself (filled in step by step) |
 | `test/` | `node:test` tests, many comparing Squid against `golden/` |
 | `golden/lmstudio/` | Recordings of the real LM Studio: what Squid must match |
+| `golden/llamacpp/` | Recordings of llama.cpp itself (raw engine replies, its tokenizer) |
 | `runtime/` | Downloaded llama.cpp engine (not committed) |

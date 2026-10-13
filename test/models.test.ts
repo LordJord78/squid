@@ -2,6 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { listModels, catalogNames, modelRoots } from "../src/models.ts";
 import { tempDir, writeGguf } from "./helpers.ts";
 
@@ -59,4 +61,13 @@ test("matches the real LM Studio shelf", { skip: !existsSync("D:\\LMStudio\\mode
     assert.equal(mine.sizeBytes, real.sizeBytes, real.modelKey);
     assert.equal(mine.vision, real.vision ?? false, real.modelKey);
   }
+});
+
+// And the printed table, line for line with `lms ls` (LM Studio pads lines with spaces; Squid doesn't).
+// Added in step 15: a new model showed LM Studio writes its architecture "llama" as "Llama".
+test("`squid ls` prints the same table as `lms ls`", { skip: !existsSync("D:\\LMStudio\\models") && "model drive not connected" }, () => {
+  const lines = (text: string) => text.replace(/\r\n/g, "\n").split("\n").map((line) => line.trimEnd()).join("\n").trim();
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const ours = execFileSync(process.execPath, [cli, "ls"], { encoding: "utf8" });
+  assert.equal(lines(ours), lines(readFileSync(new URL("../golden/lmstudio/lms-ls.txt", import.meta.url), "utf8")));
 });
