@@ -142,7 +142,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, sources: Sources,
       index: c.index,
       message: {
         role: "assistant",
-        content: c.message.content ?? "",
+        content: (c.message.content ?? "").replace(/<\/think>\s*/g, ""), // see StrayThinkTag below
         ...(c.message.reasoning_content !== undefined && { reasoning_content: c.message.reasoning_content }),
         tool_calls: (c.message.tool_calls ?? []).map((t: any) => ({ type: t.type, id: t.id, function: t.function })),
       },
@@ -216,6 +216,7 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
   const id = `chatcmpl-${randomId()}`;
   let thinking = ""; // collected to count thinking tokens for the usage event
   let roleSent = false;
+  const stray = new StrayThinkTag();
   try {
     for await (const data of sseData(incoming)) {
       if (data === "[DONE]") break;
@@ -234,6 +235,15 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
         // LM Studio instead puts the role on the first event that has words in it.
         const delta: Record<string, any> = Object.fromEntries(Object.entries(c.delta ?? {}).filter(([key, value]) => value !== null && key !== "role"));
         thinking += delta.reasoning_content ?? "";
+        if (delta.content !== undefined) {
+          const pass = stray.next(delta.content);
+          if (pass) delta.content = pass;
+          else delete delta.content; // held back for now
+        }
+        if (c.finish_reason != null) {
+          const rest = stray.flush(); // the answer ended while something was held back
+          if (rest) delta.content = rest + (delta.content ?? "");
+        }
         const deltas = delta.tool_calls ? lmstudioToolDeltas(delta) : [delta];
         deltas.forEach((d, i) => {
           const last = i === deltas.length - 1; // finish_reason goes on the last event only
@@ -250,6 +260,47 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
     return res.destroy();
   }
   res.end(sseEvent("[DONE]"));
+}
+
+// A model quirk (measured: the 9B, 8 times in 20 on one conversation): after its thinking has properly
+// ended, the model writes a second "</think>" into the answer, e.g. "purple\n</think>\n\npurple".
+// llama.cpp has already finished reading the thinking, so the tag arrives as answer text. It's removed
+// here, with the blank lines after it, for every app. While streaming, an ending that might be the start
+// of the tag ("…</thi") is held back until the next piece shows whether it is. Text already sent can't
+// be taken back, so the repeated word stays: "purple\npurple".
+const TAG = "</think>";
+class StrayThinkTag {
+  private held = "";
+  private skipBlank = false; // a tag was just removed: drop the blank lines that follow it
+  // Takes the next piece of the answer; returns what can be passed on now.
+  next(piece: string): string {
+    let text = this.held + piece;
+    this.held = "";
+    if (this.skipBlank) {
+      text = text.trimStart();
+      if (!text) return "";
+      this.skipBlank = false;
+    }
+    let at;
+    while ((at = text.indexOf(TAG)) !== -1) {
+      const after = text.slice(at + TAG.length).trimStart();
+      if (!after) this.skipBlank = true; // the blank lines may continue in the next piece
+      text = text.slice(0, at) + after;
+    }
+    for (let n = Math.min(TAG.length - 1, text.length); n > 0; n--) {
+      if (TAG.startsWith(text.slice(-n))) {
+        this.held = text.slice(-n);
+        return text.slice(0, -n);
+      }
+    }
+    return text;
+  }
+  // What's still held back when the answer ends (an answer that really ended in "<", say).
+  flush(): string {
+    const out = this.held;
+    this.held = "";
+    return out;
+  }
 }
 
 // A streamed tool call, LM Studio's way (observed): one event names the tool with empty arguments, then

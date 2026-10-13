@@ -166,5 +166,3 @@ export function loadRulebook(root: string, files = { user: join(SQUID_HOME, "con
   return { deny: list(user.deny, project.deny), ask: list(user.ask, project.ask), allow: list(user.allow), root };
 }
 
-// Which rule tool each of Squid's tools counts as.
-export const RULE_TOOL: Record<string, Tool> = { list_files: "Read", read_file: "Read", search: "Read" };

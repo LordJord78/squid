@@ -39,10 +39,14 @@ test("the chat remembers earlier turns, forgets on /clear, and stops at /exit", 
   // Run in an empty folder: since step 08 the model can search the folder it's in, and in the Squid repo it
   // found "my favourite colour is purple" in this very test file, even after /clear.
   const run = spawnSync(process.execPath, [cli, "chat", "--model", "qwen/qwen3.5-9b"], { cwd: tempDir(), input: lines.join("\n") + "\n", encoding: "utf8", timeout: 280_000 });
-  const answers = run.stdout.replace(/^› /, "").trim().split(/\r?\n/).map((a) => a.trim().toLowerCase());
-  assert.equal(answers.length, 3, `three questions answered, nothing after /exit: ${JSON.stringify(answers)}`);
-  assert.match(answers[1], /purple/, "remembered from the first turn");
-  assert.doesNotMatch(answers[2], /purple/, "forgotten after /clear");
+  // One meter line per answer (on stderr) counts the answers; an answer can span lines (the 9B sometimes
+  // repeats itself, see StrayThinkTag in server.ts), so stdout is read as a whole.
+  const meters = run.stderr.match(/\d[\d,]* \/ 8,192 tokens \(\d+%\)/g) ?? [];
+  assert.equal(meters.length, 3, "three questions answered against the 9B's 8,192-token context, nothing after /exit");
+  const answers = run.stdout.replace(/^› /, "").trim().toLowerCase();
+  assert.doesNotMatch(answers, /<\/think>/);
+  const [beforeClear, afterClear] = [answers.slice(0, answers.lastIndexOf("\n")), answers.slice(answers.lastIndexOf("\n") + 1)];
+  assert.match(beforeClear, /purple/, "remembered from the first turn");
+  assert.doesNotMatch(afterClear, /purple/, "forgotten after /clear (the last line is the last answer)");
   assert.match(run.stderr, /Started a new conversation/);
-  assert.match(run.stderr, /\d+ \/ 8,192 tokens \(\d+%\)/, "the meter, against the 9B's 8,192-token context");
 });

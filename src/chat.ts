@@ -5,6 +5,8 @@ import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
 import { dim, type Message } from "./reply.ts";
 import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
+import { newSession, nobodyToAsk } from "./tools.ts";
+import { keyboardApprover, questionOn } from "./approve.ts";
 
 // What a typed line asks for: nothing, a message for the model, or a /command for Squid.
 export type Line = { kind: "empty" } | { kind: "say"; text: string } | { kind: "command"; name: string; arg: string };
@@ -45,9 +47,13 @@ export async function chat(options: { model?: string; system?: string }): Promis
   let open = true;
   rl.on("close", () => (open = false));
   const prompt = () => open && rl.prompt();
-  // Ctrl+C: stop the answer being written, or, at the prompt, leave.
-  rl.on("SIGINT", () => (answering ? answering.abort() : rl.close()));
-  process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root} (it can read files here, not change them). /help for commands.\n`));
+  // Approvals are asked on the same readline. Piped-in input has nobody to answer, so changes are refused.
+  let cancelQuestion: (() => void) | undefined;
+  const approver = process.stdin.isTTY ? keyboardApprover(questionOn(rl, (cancel) => (cancelQuestion = cancel))) : nobodyToAsk;
+  const session = newSession(root, approver, (text) => process.stderr.write(text)); // lasts the whole chat
+  // Ctrl+C: answer "no" to an open question, or stop the answer being written, or, at the prompt, leave.
+  rl.on("SIGINT", () => (cancelQuestion ? cancelQuestion() : answering ? answering.abort() : rl.close()));
+  process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root} (it can read files here and change them with your OK). /help for commands.\n`));
   prompt();
 
   // `for await` hands over typed lines one at a time and holds on to any that arrive while an answer
@@ -80,7 +86,7 @@ export async function chat(options: { model?: string; system?: string }): Promis
       answering = new AbortController();
       try {
         // The agent loop adds the answer, plus any tool calls and their results, to the history.
-        const turn = await agentTurn(base, model, history, root, answering.signal);
+        const turn = await agentTurn(base, model, history, session, answering.signal);
         model = turn.model;
         used = turn.reply.usage?.total_tokens ?? used;
         const limit = await contextLimit(base, model);

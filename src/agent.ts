@@ -1,6 +1,6 @@
 // The agent loop, the heart of Claude Code: send the conversation; if the model asks for tools, run
 // them and send back what they returned; repeat until the model answers in words.
-import { TOOLS, describeCall, runTool } from "./tools.ts";
+import { TOOLS, describeCall, runTool, type Session } from "./tools.ts";
 import { loadRulebook } from "./rules.ts";
 import { dim, streamReply, terminal, type Message, type Output, type Reply } from "./reply.ts";
 
@@ -12,7 +12,8 @@ export const MAX_ROUNDS = 25;
 export function startConversation(root: string, extra?: string): Message[] {
   const prompt = [
     `You are Squid, an assistant running on this computer, working in the folder ${root}.`,
-    "You can look at its files with the tools list_files, read_file and search. Paths are relative to that folder; nothing outside it can be opened. You cannot change files or run commands.",
+    "You can look at its files with list_files, read_file and search, and change them with edit_file and write_file. Paths are relative to that folder; nothing outside it can be opened. You cannot run commands.",
+    "Every change is shown to the user, who approves or declines it. If they decline, don't try the same change again; follow their instructions if they gave any.",
     "Some files are off limits (secrets, holdout data, and anything the user's rules deny). If a tool says so, don't try to get around it.",
     "When a question is about the project, look before you answer, and say which files you read. Be concise.",
   ].join("\n");
@@ -21,15 +22,16 @@ export function startConversation(root: string, extra?: string): Message[] {
 
 // One turn of the conversation. The model may call tools again and again (up to MAX_ROUNDS) before it
 // answers. Every call and result is added to `messages`, so later turns remember what was looked at.
+// The session (tools.ts) carries the folder, the rules, who approves changes, and what has been read.
 export async function agentTurn(
   base: string,
   model: string | undefined,
   messages: Message[],
-  root: string,
+  session: Session,
   signal?: AbortSignal,
   out: Output = terminal,
 ): Promise<{ model: string; reply: Reply }> {
-  const book = loadRulebook(root); // the rules in force for this turn (step 09)
+  session.book = loadRulebook(session.root); // rules edited mid-chat apply from the next question (step 09)
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const reply = await streamReply(base, { model, messages, tools: TOOLS }, signal, out);
     model = reply.model;
@@ -46,8 +48,9 @@ export async function agentTurn(
     if (!reply.toolCalls.length) return { model, reply }; // it answered in words: the turn is over
 
     for (const call of reply.toolCalls) {
-      const result = runTool(root, call, book);
-      out.note(`● ${describeCall(call)}\n${dim(`  ⎿ ${summarise(result)}`)}\n`);
+      out.note(`● ${describeCall(call)}\n`);
+      const result = await runTool(session, call); // may stop here to ask you (step 10)
+      out.note(`${dim(`  ⎿ ${summarise(result)}`)}\n`);
       // A tool result is a message of its own, linked to the call by its id.
       messages.push({ role: "tool", tool_call_id: call.id, content: result });
     }

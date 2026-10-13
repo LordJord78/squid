@@ -178,6 +178,40 @@ test("a streamed tool call is reshaped into LM Studio's three parts", async () =
   }
 });
 
+test("a stray </think> in an answer is removed, even when it arrives in pieces", async () => {
+  // An engine that sends each answer as the pieces given, streamed or whole.
+  const pieces: Record<string, string[]> = {
+    quirk: ["</", "think>", "\n\n", "pur", "ple"],
+    repeat: ["purple\n", "</thi", "nk>", "\n", "\n", "purple"], // what the 9B really sends, 8 times in 20
+    normal: ["\n\n", "<b>", "Hello", "</b>", " <", "3"],
+  };
+  const engine = createServer(async (req, res) => {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    const request = JSON.parse(body);
+    const parts = pieces[request.messages[0].content];
+    if (!request.stream) {
+      return res.end(JSON.stringify({ created: 1, choices: [{ index: 0, message: { role: "assistant", content: parts.join("") }, finish_reason: "stop" }], usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }));
+    }
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    for (const content of parts) res.write(`data: ${JSON.stringify({ created: 1, choices: [{ index: 0, delta: { content } }] })}\n\n`);
+    res.end(`data: ${JSON.stringify({ created: 1, choices: [{ index: 0, delta: {}, finish_reason: "stop" }] })}\n\ndata: [DONE]\n\n`);
+  });
+  await new Promise<void>((resolve) => engine.listen(0, "127.0.0.1", resolve));
+  try {
+    await withServer({ shelf: () => [], engines: () => [engineRecord(portOf(engine))] }, async (base) => {
+      const ask = (content: string, stream: boolean) => post(`${base}/v1/chat/completions`, JSON.stringify({ model: "qwen/qwen3.5-9b", messages: [{ role: "user", content }], stream }));
+      const streamed = async (content: string) => sseEvents(await (await ask(content, true)).text()).map((c) => c.choices[0].delta.content ?? "").join("");
+      assert.equal(await streamed("quirk"), "purple");
+      assert.equal(await streamed("repeat"), "purple\npurple", "the tag goes; text already sent stays");
+      assert.equal(await streamed("normal"), "\n\n<b>Hello</b> <3", "a real answer is passed on untouched");
+      assert.equal((await (await ask("quirk", false)).json()).choices[0].message.content, "purple");
+    });
+  } finally {
+    engine.close();
+  }
+});
+
 test("hanging up mid-answer stops the engine", async () => {
   let engineHungUp = false;
   // An engine that never finishes: one event every 20 ms until its caller goes away.

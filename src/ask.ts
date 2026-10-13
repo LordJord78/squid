@@ -2,7 +2,10 @@
 // Since step 08 the model can look around the folder first (see agent.ts).
 import { ensureServer } from "./daemon.ts";
 import { agentTurn, startConversation } from "./agent.ts";
+import { createInterface } from "node:readline";
 import { dim } from "./reply.ts";
+import { newSession, nobodyToAsk } from "./tools.ts";
+import { keyboardApprover, questionOn } from "./approve.ts";
 
 export type AskOptions = { model?: string; system?: string; stats?: boolean };
 
@@ -14,11 +17,24 @@ export async function ask(prompt: string, options: AskOptions): Promise<void> {
   const piped = process.stdin.isTTY ? "" : (await readStdin()).trim();
   const messages = startConversation(process.cwd(), options.system);
   messages.push({ role: "user", content: piped ? `${prompt}\n\n${piped}` : prompt });
-  const { reply } = await agentTurn(base, options.model, messages, process.cwd());
+  const session = newSession(process.cwd(), process.stdin.isTTY ? keyboardApprover(askOnce) : nobodyToAsk, (text) => process.stderr.write(text));
+  const { reply } = await agentTurn(base, options.model, messages, session);
   // Like `lms chat --stats`, measured here at the receiving end.
   if (options.stats && reply.usage && reply.tokensPerSecond !== undefined) {
     const thinking = reply.usage.completion_tokens_details?.reasoning_tokens ?? 0;
     process.stderr.write(dim(`${reply.tokensPerSecond.toFixed(1)} tok/s · ${reply.usage.completion_tokens} tokens (${thinking} thinking) · first word after ${reply.secondsToFirstWord!.toFixed(2)} s\n`));
+  }
+}
+
+// One approval question at the keyboard. The prompt goes to stderr, so `> file` still saves only the
+// answer. Ctrl+C closes the question, which counts as "no".
+async function askOnce(prompt: string): Promise<string | undefined> {
+  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  rl.on("SIGINT", () => rl.close());
+  try {
+    return await questionOn(rl, () => {})(prompt);
+  } finally {
+    rl.close();
   }
 }
 
