@@ -1,7 +1,7 @@
 // The agent loop, the heart of Claude Code: send the conversation; if the model asks for tools, run
 // them and send back what they returned; repeat until the model answers in words.
-import { TOOLS, describeCall, runTool, type Session } from "./tools.ts";
-import { loadRulebook } from "./rules.ts";
+import { describeCall, runTool, toolsFor, type Session } from "./tools.ts";
+import { loadRulebook, type Mode } from "./rules.ts";
 import { dim, streamReply, terminal, type Message, type Output, type Reply } from "./reply.ts";
 
 // A model that keeps calling tools without ever answering is stuck. The AI Lab's benchmark saw the
@@ -20,6 +20,19 @@ export function startConversation(root: string, extra?: string): Message[] {
   return [{ role: "system", content: extra ? `${prompt}\n\n${extra}` : prompt }];
 }
 
+// What each mode means, told to the model in the first (system) message. It's put there, rather than in
+// a message of its own, because some models' chat templates refuse a system message anywhere but first.
+const MODE_NOTE: Record<Mode, string> = {
+  manual: "Mode: manual. Changes, and commands that aren't read-only, are shown to the user to approve first.",
+  auto: "Mode: auto. Edits inside this folder go ahead without asking; commands that aren't read-only still need approval.",
+  plan: "Mode: plan. Investigate first (read files, read-only commands), then call submit_plan with a clear numbered plan. Don't change anything: edits are blocked until the user approves the plan.",
+};
+function withMode(messages: Message[], mode: Mode): Message[] {
+  const [first, ...rest] = messages;
+  if (first?.role !== "system") return [{ role: "system", content: MODE_NOTE[mode] }, ...messages];
+  return [{ ...first, content: `${first.content}\n\n${MODE_NOTE[mode]}` }, ...rest];
+}
+
 // One turn of the conversation. The model may call tools again and again (up to MAX_ROUNDS) before it
 // answers. Every call and result is added to `messages`, so later turns remember what was looked at.
 // The session (tools.ts) carries the folder, the rules, who approves changes, and what has been read.
@@ -32,9 +45,11 @@ export async function agentTurn(
   out: Output = terminal,
 ): Promise<{ model: string; reply: Reply }> {
   session.book = loadRulebook(session.root); // rules edited mid-chat apply from the next question (step 09)
+  session.book.allow.push(...session.remembered); // plus commands you said "don't ask again" for (step 12)
   session.signal = signal; // Ctrl+C also stops a command that's running (step 11)
   for (let round = 1; round <= MAX_ROUNDS; round++) {
-    const reply = await streamReply(base, { model, messages, tools: TOOLS }, signal, out);
+    // The mode can change during a turn (an approved plan), so the tools and the note are fresh each round.
+    const reply = await streamReply(base, { model, messages: withMode(messages, session.mode), tools: toolsFor(session.mode) }, signal, out);
     model = reply.model;
     messages.push({
       role: "assistant",

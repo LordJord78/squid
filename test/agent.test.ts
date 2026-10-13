@@ -91,6 +91,33 @@ test("a model that never stops calling tools is stopped", async () => {
   }
 });
 
+test("plan mode: look, try an edit (blocked), submit the plan, get it approved, then edit without a question", async () => {
+  const fake = await scriptedServer([
+    { tool: ["read_file", { path: "README.md" }] },
+    { tool: ["edit_file", { path: "README.md", old_text: "Blue Heron", new_text: "Grey Heron" }] },
+    { tool: ["submit_plan", { plan: "1. Rename Blue Heron to Grey Heron in README.md" }] },
+    { tool: ["edit_file", { path: "README.md", old_text: "Blue Heron", new_text: "Grey Heron" }] },
+    { say: "Done." },
+  ]);
+  const root = project();
+  const asked: unknown[] = [];
+  const session = newSession(root, async (request) => (asked.push(request), { ok: false }), undefined, { mode: "plan", choosePlan: async () => ({ choice: "auto" }) });
+  const messages: Message[] = [...startConversation(root), { role: "user", content: "Rename the codename to Grey Heron." }];
+  try {
+    await agentTurn(fake.base, undefined, messages, session, undefined, collector().out);
+    assert.match(fake.requests[1].messages.at(-1).content, /Blue Heron/, "reading works in plan mode");
+    assert.match(fake.requests[2].messages.at(-1).content, /plan mode: nothing is changed until you approve the plan/);
+    assert.ok(fake.requests[0].tools.some((t: any) => t.function.name === "submit_plan"), "plan mode offers submit_plan");
+    assert.match(fake.requests[0].messages[0].content, /Mode: plan/, "the model is told the mode");
+    assert.match(fake.requests[4].messages[0].content, /Mode: auto/, "...and told again after it changes");
+    assert.ok(!fake.requests[4].tools.some((t: any) => t.function.name === "submit_plan"));
+    assert.equal(readFileSync(join(root, "README.md"), "utf8"), "The codename is Grey Heron.\n");
+    assert.equal(asked.length, 0, "approving the plan in auto mode means no more questions for edits");
+  } finally {
+    fake.close();
+  }
+});
+
 test("thinking from finished turns is dropped before the next question", () => {
   const messages: Message[] = [{ role: "assistant", content: "hi", reasoning_content: "long thoughts" }];
   forgetThinking(messages);
@@ -169,6 +196,32 @@ test("the real model answers from git history with read-only commands only", { s
     const { reply } = await agentTurn(base, "qwen/qwen3.5-9b", messages, session, undefined, out);
     assert.match(seen.notes, /● run_command\(git /, "it used git");
     assert.match(reply.content, /\b3\b|three/i);
+  } finally {
+    server.close();
+  }
+});
+
+// Plan mode with the real 9B: it may only look until it has submitted a plan; approved for auto mode, it
+// then makes the change without a single edit question.
+test("the real model plans first, then carries out the approved plan", { skip: !ready && "engine or model drive missing", timeout: 300_000 }, async (t) => {
+  t.after(() => unload("qwen/qwen3.5-9b"));
+  const root = tempDir();
+  writeFileSync(join(root, "greeting.txt"), "Helo world\n");
+  const plans: string[] = [];
+  const asked: Approval[] = [];
+  const session = newSession(root, async (request) => (asked.push(request), { ok: false }), undefined, {
+    mode: "plan",
+    choosePlan: async (plan) => (plans.push(plan), { choice: "auto" }),
+  });
+  const server = await startServer(0);
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const messages: Message[] = [...startConversation(root), { role: "user", content: "Fix the spelling mistake in greeting.txt." }];
+  try {
+    await agentTurn(base, "qwen/qwen3.5-9b", messages, session, undefined, collector().out);
+    assert.equal(plans.length, 1, "it submitted one plan");
+    assert.equal(session.mode, "auto");
+    assert.equal(readFileSync(join(root, "greeting.txt"), "utf8").trim(), "Hello world");
+    assert.equal(asked.length, 0, "no edit questions after the plan was approved for auto mode");
   } finally {
     server.close();
   }

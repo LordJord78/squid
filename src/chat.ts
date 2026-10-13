@@ -6,7 +6,9 @@ import { ensureServer } from "./daemon.ts";
 import { dim, type Message } from "./reply.ts";
 import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
 import { newSession, nobodyToAsk } from "./tools.ts";
-import { keyboardApprover, questionOn } from "./approve.ts";
+import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
+import { MODES, type Mode } from "./rules.ts";
+import { readConfig } from "./config.ts";
 
 // What a typed line asks for: nothing, a message for the model, or a /command for Squid.
 export type Line = { kind: "empty" } | { kind: "say"; text: string } | { kind: "command"; name: string; arg: string };
@@ -28,11 +30,21 @@ export function meter(used: number, limit: number, width = 20): string {
 
 const HELP = `/clear            forget the conversation and start a new one
 /model [name]     show or switch the model (it loads if needed)
+/mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab)
 /system [text]    show or set instructions the model follows from the next message
 /exit             leave (so does Ctrl+D, or Ctrl+C at an empty prompt)
 Ctrl+C while it's answering stops the answer.`;
 
-export async function chat(options: { model?: string; system?: string }): Promise<void> {
+// The mode is always on screen, in the prompt itself (Claude Code shows it under the input box).
+export const promptFor = (mode: Mode) => (mode === "manual" ? "› " : mode === "auto" ? `${dim("⏵⏵ auto")} › ` : `${dim("⏸ plan")} › `);
+export const nextMode = (mode: Mode): Mode => MODES[(MODES.indexOf(mode) + 1) % MODES.length]; // manual → auto → plan → manual
+const MODE_HELP: Record<Mode, string> = {
+  manual: "manual: every change and every command that isn't read-only is shown to you first",
+  auto: "auto: edits inside this folder go ahead without asking; commands still ask",
+  plan: "plan: it only looks, then proposes a plan for you to approve",
+};
+
+export async function chat(options: { model?: string; system?: string; mode?: Mode }): Promise<void> {
   const base = `http://127.0.0.1:${(await ensureServer()).port}`;
   const root = process.cwd(); // the folder the model may look at: wherever you typed `squid`
   let model = options.model; // undefined: the server picks the loaded or default model
@@ -46,14 +58,32 @@ export async function chat(options: { model?: string; system?: string }): Promis
   // being written. The lines already read are still handed over; only the prompt must not be shown.
   let open = true;
   rl.on("close", () => (open = false));
-  const prompt = () => open && rl.prompt();
-  // Approvals are asked on the same readline. Piped-in input has nobody to answer, so changes are refused.
+  // Approvals and plan choices are asked on the same readline. Piped-in input has nobody to answer, so
+  // changes are refused and plans aren't approved.
   let cancelQuestion: (() => void) | undefined;
-  const approver = process.stdin.isTTY ? keyboardApprover(questionOn(rl, (cancel) => (cancelQuestion = cancel))) : nobodyToAsk;
-  const session = newSession(root, approver, (text) => process.stderr.write(text)); // lasts the whole chat
+  const question = questionOn(rl, (cancel) => (cancelQuestion = cancel));
+  const keyboard = process.stdin.isTTY;
+  const session = newSession(root, keyboard ? keyboardApprover(question) : nobodyToAsk, (text) => process.stderr.write(text), {
+    mode: options.mode ?? readConfig().defaultMode ?? "manual",
+    choosePlan: keyboard ? keyboardPlanChooser(question) : undefined,
+  }); // lasts the whole chat
+  // The prompt is redrawn with the current mode each time, since a turn can change it (an approved plan).
+  const prompt = () => {
+    if (!open) return;
+    rl.setPrompt(promptFor(session.mode));
+    rl.prompt();
+  };
   // Ctrl+C: answer "no" to an open question, or stop the answer being written, or, at the prompt, leave.
   rl.on("SIGINT", () => (cancelQuestion ? cancelQuestion() : answering ? answering.abort() : rl.close()));
-  process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root} (it can read files here and change them with your OK). /help for commands.\n`));
+  // Shift+Tab (it arrives as the key "tab" with shift held) cycles the mode while you're typing, and the
+  // prompt is redrawn in place, keeping what you've typed so far.
+  process.stdin.on("keypress", (_text, key) => {
+    if (key?.name !== "tab" || !key.shift || answering || cancelQuestion) return;
+    session.mode = nextMode(session.mode);
+    rl.setPrompt(promptFor(session.mode));
+    rl.prompt(true);
+  });
+  process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root}. Mode ${MODE_HELP[session.mode]}. Shift+Tab changes mode; /help for commands.\n`));
   prompt();
 
   // `for await` hands over typed lines one at a time and holds on to any that arrive while an answer
@@ -64,7 +94,7 @@ export async function chat(options: { model?: string; system?: string }): Promis
       if (input.name === "exit" || input.name === "quit") break;
       else if (input.name === "help") process.stderr.write(dim(`${HELP}\n`));
       else if (input.name === "clear") {
-        history = [];
+        history = startConversation(root, system); // a fresh conversation still starts with its instructions
         used = 0;
         process.stderr.write(dim("Started a new conversation.\n"));
       } else if (input.name === "model") {
@@ -72,6 +102,11 @@ export async function chat(options: { model?: string; system?: string }): Promis
           model = await pickModel(base, input.arg).catch((err: Error) => (process.stderr.write(`${err.message}\n`), model));
         }
         process.stderr.write(dim(`Model: ${model ?? "your default model"}\n`));
+      } else if (input.name === "mode") {
+        const wanted = input.arg.toLowerCase();
+        if (MODES.includes(wanted as Mode)) session.mode = wanted as Mode;
+        else if (wanted) process.stderr.write(`There's no mode called ${input.arg}: manual, auto or plan.\n`);
+        process.stderr.write(dim(`Mode ${MODE_HELP[session.mode]}\n`));
       } else if (input.name === "system") {
         if (input.arg) {
           system = input.arg;

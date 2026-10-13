@@ -4,7 +4,7 @@
 // Every path must stay inside that folder (step 08) and pass the rulebook (step 09).
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { decide, loadRulebook, type Rulebook } from "./rules.ts";
+import { decide, loadRulebook, parseRule, type Mode, type Rule, type Rulebook } from "./rules.ts";
 import { renderDiff } from "./diff.ts";
 import { CommandError, describeRun, insideFolder, isReadOnly, isShell, pathArguments, removesCriticalPath, resolveCommand, runCommand, splitCommand, type Command } from "./shell.ts";
 
@@ -35,16 +35,28 @@ export const TOOLS = [
     ["command"]),
 ];
 
+// Offered only in plan mode (step 12): the model hands over its plan, and you decide what happens next.
+const SUBMIT_PLAN = tool("submit_plan", "Plan mode only: when you have investigated enough, submit your plan as clear numbered steps. The user approves it (and you then carry it out) or asks you to keep planning.",
+  { plan: { type: "string", description: "The plan, as numbered steps" } }, ["plan"]);
+export const toolsFor = (mode: Mode) => (mode === "plan" ? [...TOOLS, SUBMIT_PLAN] : TOOLS);
+
 // A problem with a request (wrong path, not allowed, declined). It goes back to the model as the tool's
 // result, so it can correct itself, instead of stopping the conversation.
 export class ToolError extends Error {}
 
 // What you're asked to approve, and your answer: yes, or no with optional instructions for the model.
-export type Approval = { title: string; reason: string; preview: string };
-export type Answer = { ok: boolean; feedback?: string };
+// `always` describes what a third answer, "yes, and don't ask again", would do; absent, it isn't offered.
+export type Approval = { title: string; reason: string; preview: string; always?: string };
+export type Answer = { ok: boolean; feedback?: string; always?: boolean };
 export type Approver = (request: Approval) => Promise<Answer>;
 // With nobody at the keyboard (input piped in, a script), anything that needs approval is refused.
 export const nobodyToAsk: Approver = async () => ({ ok: false, feedback: "nobody was at the keyboard to approve it" });
+
+// Your verdict on a plan (Claude Code's three choices): carry it out in auto mode, carry it out asking
+// before each change (manual), or keep planning, with what to change.
+export type PlanChoice = { choice: "auto" | "manual" | "keep"; feedback?: string };
+export type PlanChooser = (plan: string) => Promise<PlanChoice>;
+export const nobodyToChoose: PlanChooser = async () => ({ choice: "keep", feedback: "nobody is at the keyboard to approve it, so give the plan as your final answer instead" });
 
 // One working session: the folder, its rules, who approves, and which files the model has read, with
 // each file's modification time at that moment. Edits need a fresh read, so the model can't change a
@@ -56,9 +68,17 @@ export type Session = {
   seen: Map<string, number>;
   show: (text: string) => void;
   signal?: AbortSignal; // Ctrl+C: stops a running command too (step 11)
+  mode: Mode; // manual, auto or plan (step 12); tools can change it (an "always" answer, an approved plan)
+  remembered: Rule[]; // commands you said "don't ask again" for, this session only
+  choosePlan: PlanChooser;
 };
-export function newSession(root: string, approve: Approver = nobodyToAsk, show: (text: string) => void = () => {}): Session {
-  return { root, book: loadRulebook(root), approve, seen: new Map(), show };
+export function newSession(
+  root: string,
+  approve: Approver = nobodyToAsk,
+  show: (text: string) => void = () => {},
+  options: { mode?: Mode; choosePlan?: PlanChooser } = {},
+): Session {
+  return { root, book: loadRulebook(root), approve, seen: new Map(), show, mode: options.mode ?? "manual", remembered: [], choosePlan: options.choosePlan ?? nobodyToChoose };
 }
 
 // Runs one tool call and returns what the model gets to see, always as text.
@@ -78,6 +98,7 @@ export async function runTool(session: Session, call: Pick<ToolCall, "name" | "a
       : call.name === "edit_file" ? await editFile(session, text(args.path), text(args.old_text), text(args.new_text), args.replace_all === true)
       : call.name === "write_file" ? await writeFile(session, text(args.path), text(args.content))
       : call.name === "run_command" ? await runCommandTool(session, text(args.command), args.timeout_seconds ?? undefined)
+      : call.name === "submit_plan" ? await submitPlan(session, text(args.plan))
       : `Error: there's no tool called ${call.name}. The tools are ${TOOLS.map((t) => t.function.name).join(", ")}.`;
     // Whatever a tool returns is added to the conversation, and the context window is finite (step 07).
     return result.length > 24_000 ? `${result.slice(0, 24_000)}\n… (cut: ${result.length - 24_000} more characters)` : result;
@@ -128,14 +149,20 @@ function writeTarget(root: string, requested: string): string {
 // Asks the rulebook; on "ask", asks you. Unless the answer is yes, throws, so the model hears why.
 // An edit that a rule allows still has its change shown, just without the question.
 async function permit(session: Session, tool: "Read" | "Edit", requested: string, real: string, title: string, preview = ""): Promise<void> {
-  const verdict = decide({ tool, path: resolve(realpathSync.native(session.root), requested), real }, session.book);
+  const verdict = decide({ tool, path: resolve(realpathSync.native(session.root), requested), real }, session.book, session.mode);
   if (verdict.outcome === "deny") throw new ToolError(`${requested}: ${verdict.reason}`);
   if (verdict.outcome === "allow") {
     if (preview) session.show(`${title} (${verdict.reason})\n${preview}\n`);
     return;
   }
-  const answer = await session.approve({ title, reason: verdict.reason, preview });
+  // For an edit, "don't ask again" means switching to auto mode, as Claude Code's edit prompt offers.
+  const always = tool === "Edit" && session.mode === "manual" ? "yes, and switch to auto mode: no more questions for edits in this folder" : undefined;
+  const answer = await session.approve({ title, reason: verdict.reason, preview, always });
   if (!answer.ok) throw new ToolError(`the user declined: ${title}${answer.feedback ? `. Their instructions: ${answer.feedback}` : ""}`);
+  if (answer.always && always) {
+    session.mode = "auto";
+    session.show("⏵⏵ auto mode on: edits inside this folder go ahead without asking (Shift+Tab to change)\n");
+  }
 }
 const readable = (path: string, book: Rulebook) => decide({ tool: "Read", path, real: path }, book).outcome === "allow";
 
@@ -286,7 +313,7 @@ async function runCommandTool(session: Session, line: string, timeout = 120): Pr
   }
   const outside = paths.local.filter((path) => !insideFolder(root, path));
   const readOnly = isReadOnly(command) && !outside.length && !paths.network.length;
-  const verdict = decide({ tool: "Bash", command: command.text, readOnly }, session.book);
+  const verdict = decide({ tool: "Bash", command: command.text, readOnly }, session.book, session.mode);
   if (verdict.outcome === "deny") throw new ToolError(`${command.text}: ${verdict.reason}`);
   // A shell can run anything at all, so it always asks, whatever an allow rule says.
   if (verdict.outcome === "ask" || isShell(command)) {
@@ -294,8 +321,16 @@ async function runCommandTool(session: Session, line: string, timeout = 120): Pr
       : paths.network.length ? `${paths.network[0]} is a network path: opening it can send your Windows login to that server`
       : outside.length ? `it mentions ${outside[0]}, outside the project`
       : verdict.reason;
-    const answer = await session.approve({ title: `Run ${command.text}`, reason, preview: `in ${root}\n> ${command.text}\n(program: ${command.program})` });
+    // "Don't ask again" remembers exactly this command for the rest of the session: never for a shell,
+    // and never for a command with a * in it, which a rule would read as "anything here".
+    const always = isShell(command) || command.text.includes("*") ? undefined : `yes, and don't ask again for exactly "${command.text}" this session`;
+    const answer = await session.approve({ title: `Run ${command.text}`, reason, preview: `in ${root}\n> ${command.text}\n(program: ${command.program})`, always });
     if (!answer.ok) throw new ToolError(`the user declined: Run ${command.text}${answer.feedback ? `. Their instructions: ${answer.feedback}` : ""}`);
+    if (answer.always && always) {
+      const rule = parseRule(`Bash(${command.text})`);
+      session.remembered.push(rule);
+      session.book.allow.push(rule);
+    }
   }
   const seconds = Math.min(Math.max(1, Math.floor(timeout)), 600);
   const ran = await runCommand(command, root, seconds, session.signal);
@@ -303,6 +338,19 @@ async function runCommandTool(session: Session, line: string, timeout = 120): Pr
   // picture of every file is now possibly stale, so edits need a fresh read again (step 10).
   if (!readOnly) session.seen.clear();
   return describeRun(ran, seconds);
+}
+
+// --- plans (step 12) ---
+
+// The model hands over its plan; you choose. Approved, the session switches to the chosen mode and the
+// model is told to carry it out, so the work continues in the same turn.
+async function submitPlan(session: Session, plan: string): Promise<string> {
+  if (session.mode !== "plan") throw new ToolError("submit_plan is for plan mode; you're not in it, so go ahead");
+  if (!plan.trim()) throw new ToolError("the plan is empty");
+  const { choice, feedback } = await session.choosePlan(plan);
+  if (choice === "keep") return `The user wants you to keep planning${feedback ? `: ${feedback}` : ""}. Stay in plan mode.`;
+  session.mode = choice;
+  return `The user approved the plan. You are now in ${choice} mode (${choice === "auto" ? "edits inside the folder go ahead without asking" : "each change is shown to the user first"}). Carry out the plan now, step by step.`;
 }
 
 // The change as a coloured diff, at most 80 lines of it.
@@ -330,5 +378,6 @@ export function describeCall(call: Pick<ToolCall, "name" | "arguments">): string
   if (call.name === "search") return `search("${args.text ?? ""}"${args.path ? ` in ${args.path}` : ""})`;
   if (["list_files", "read_file", "edit_file", "write_file"].includes(call.name)) return `${call.name}(${args.path ?? "."})`;
   if (call.name === "run_command") return `run_command(${args.command ?? ""})`;
+  if (call.name === "submit_plan") return "submit_plan";
   return `${call.name}(${call.arguments})`;
 }

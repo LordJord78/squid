@@ -7,6 +7,10 @@ import { join } from "node:path";
 import { SQUID_HOME } from "./config.ts";
 
 export type Tool = "Read" | "Edit" | "Bash";
+// Claude Code's modes (step 12): manual asks before every change; auto lets edits inside the folder go
+// ahead (Claude Code's acceptEdits); plan only looks, until you approve a plan.
+export type Mode = "manual" | "auto" | "plan";
+export const MODES: Mode[] = ["manual", "auto", "plan"]; // the order Shift+Tab cycles through
 export type Kind = "deny" | "ask" | "allow";
 export type Rule = { text: string; tool: string; specifier?: string };
 // What the agent wants to do. For a file, `path` is what it asked for and `real` is where that leads
@@ -49,9 +53,10 @@ export function parseRule(text: string): Rule {
 }
 
 // The decision, in Claude Code's documented order. The first step that matches decides:
-//   Squid's hard rules → deny rules → protected paths (edits) → ask rules → allow rules → the default.
+//   Squid's hard rules → deny rules → plan mode (edits) → protected paths (edits) → ask rules →
+//   allow rules → the mode's default.
 // "Rule specificity doesn't change the order": a broad deny beats a narrow allow.
-export function decide(request: Request, book: Rulebook): Decision {
+export function decide(request: Request, book: Rulebook, mode: Mode = "manual"): Decision {
   const paths = [request.path, request.real].filter((p): p is string => p !== undefined);
   if (request.tool !== "Bash") {
     const secret = paths.find((p) => HARD_DENY.some((pattern) => pathMatches(pattern, p, book, "deny")));
@@ -61,6 +66,8 @@ export function decide(request: Request, book: Rulebook): Decision {
   // file is denied. Allow rules need BOTH to match, so a link can't carry an allowed path somewhere else.
   const deny = book.deny.find((rule) => matches(rule, request, book, "deny", "either"));
   if (deny) return { outcome: "deny", reason: `denied by rule ${deny.text}` };
+  // In plan mode nothing changes until you approve the plan, whatever the rules allow (documented).
+  if (mode === "plan" && request.tool === "Edit") return { outcome: "deny", reason: "plan mode: nothing is changed until you approve the plan (submit_plan)" };
   if (request.tool === "Edit" && paths.some((p) => PROTECTED.some((pattern) => pathMatches(pattern, p, book, "deny")))) {
     return { outcome: "ask", reason: "protected path: changes here always need your OK" };
   }
@@ -68,11 +75,13 @@ export function decide(request: Request, book: Rulebook): Decision {
   if (ask) return { outcome: "ask", reason: `rule ${ask.text} says ask` };
   const allow = book.allow.find((rule) => matches(rule, request, book, "allow", "both"));
   if (allow) return { outcome: "allow", reason: `allowed by rule ${allow.text}` };
-  // No rule matched: manual mode's defaults. Reads and read-only commands run; edits and other commands
-  // ask. (Step 12 adds modes.)
+  // No rule matched: the mode's default. Reads and read-only commands run in every mode. Edits ask in
+  // manual mode and go ahead in auto mode (the folder fence and protected paths still apply). Other
+  // commands ask in every mode.
   if (request.tool === "Read") return { outcome: "allow", reason: "reading is allowed" };
   if (request.tool === "Bash" && request.readOnly) return { outcome: "allow", reason: "a read-only command" };
-  return { outcome: "ask", reason: "changes and commands need your OK" };
+  if (request.tool === "Edit" && mode === "auto") return { outcome: "allow", reason: "auto mode: edits inside this folder go ahead" };
+  return { outcome: "ask", reason: request.tool === "Edit" ? "manual mode: changes need your OK" : "commands that aren't read-only need your OK" };
 }
 
 function matches(rule: Rule, request: Request, book: Rulebook, kind: Kind, need: "either" | "both"): boolean {

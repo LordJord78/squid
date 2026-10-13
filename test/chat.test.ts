@@ -43,6 +43,10 @@ test("the chat remembers earlier turns, forgets on /clear, and stops at /exit", 
   // repeats itself, see StrayThinkTag in server.ts), so stdout is read as a whole.
   const meters = run.stderr.match(/\d[\d,]* \/ 8,192 tokens \(\d+%\)/g) ?? [];
   assert.equal(meters.length, 3, "three questions answered against the 9B's 8,192-token context, nothing after /exit");
+  // After /clear the conversation still starts with Squid's instructions (about 1,000 tokens): a bug in
+  // steps 08-11 dropped them, which showed as a tiny third count.
+  const tokens = meters.map((m) => Number(m.split(" ")[0].replace(/,/g, "")));
+  assert.ok(tokens[2] > 500, `instructions kept after /clear (${tokens[2]} tokens)`);
   const answers = run.stdout.replace(/^› /, "").trim().toLowerCase();
   assert.doesNotMatch(answers, /<\/think>/);
   const [beforeClear, afterClear] = [answers.slice(0, answers.lastIndexOf("\n")), answers.slice(answers.lastIndexOf("\n") + 1)];

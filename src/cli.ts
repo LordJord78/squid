@@ -7,6 +7,7 @@ import { load, loadOnDemand, running, secondsLeft, status, unload, type Engine }
 import { startServer, DEFAULT_PORT } from "./server.ts";
 import { ensureServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
 import { readConfig } from "./config.ts";
+import { MODES, type Mode } from "./rules.ts";
 import { ask } from "./ask.ts";
 import { chat } from "./chat.ts";
 
@@ -14,8 +15,8 @@ const [command, ...args] = process.argv.slice(2);
 
 const USAGE = `usage:
   squid                     start your local AI (server + default model) and chat with it
-  squid chat [--model NAME] [--system TEXT]
-                            a conversation in the terminal (/help inside for commands)
+  squid chat [--model NAME] [--system TEXT] [--mode manual|auto|plan]
+                            a conversation in the terminal (/help inside; Shift+Tab changes mode)
   squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
@@ -25,7 +26,7 @@ const USAGE = `usage:
   squid server start|stop|status
                             the API server (OpenAI-style) in the background, on 127.0.0.1:1235
   squid serve [--port N]    the same server in this window (Ctrl+C stops it)
-  squid ask "<question>" [--model NAME] [--system TEXT] [--stats]
+  squid ask "<question>" [--model NAME] [--system TEXT] [--mode manual|auto|plan] [--stats]
                             one question, answered as it's written`;
 
 // LM Studio shows sizes in decimal units (1 GB = 1,000,000,000 bytes), MB below 1 GB.
@@ -55,6 +56,13 @@ function pickModel(query: string): ShelfModel {
   if (matches.length === 1) return matches[0];
   if (!matches.length) fail(`no model matches "${query}" (see \`squid ls\`)`);
   fail(`"${query}" matches ${matches.length} models: ${matches.map((m) => m.key).join(", ")}`);
+}
+
+// --mode, checked against the three modes.
+function modeOption(text: string | undefined): Mode | undefined {
+  if (text === undefined) return undefined;
+  if (!MODES.includes(text as Mode)) fail(`--mode is manual, auto or plan, not "${text}"`);
+  return text as Mode;
 }
 
 // "--context 49152" arrives as text; accept only a positive whole number.
@@ -126,9 +134,9 @@ switch (command) {
     break;
   }
   case "chat": {
-    const { values } = parseArgs({ args, options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" } } });
+    const { values } = parseArgs({ args, options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" }, mode: { type: "string" } } });
     try {
-      await chat(values);
+      await chat({ ...values, mode: modeOption(values.mode) });
     } catch (err) {
       fail((err as Error).message);
     }
@@ -223,11 +231,11 @@ switch (command) {
     const { values, positionals } = parseArgs({
       args,
       allowPositionals: true,
-      options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" }, stats: { type: "boolean" } },
+      options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" }, stats: { type: "boolean" }, mode: { type: "string" } },
     });
-    if (!positionals.length) fail('usage: squid ask "<question>" [--model NAME] [--system TEXT] [--stats]');
+    if (!positionals.length) fail('usage: squid ask "<question>" [--model NAME] [--system TEXT] [--mode manual|auto|plan] [--stats]');
     try {
-      await ask(positionals.join(" "), values);
+      await ask(positionals.join(" "), { ...values, mode: modeOption(values.mode) });
     } catch (err) {
       fail((err as Error).message);
     }

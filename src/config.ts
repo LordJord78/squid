@@ -8,6 +8,7 @@ export const SQUID_HOME = join(homedir(), ".squid");
 
 export type Config = {
   defaultModel?: string; // used when no model is named: bare `squid`, `squid ask`
+  defaultMode?: "manual" | "auto" | "plan"; // the mode a chat starts in (Claude Code: defaultMode); manual if unset
   jitTtlMinutes?: number; // idle time before an automatically loaded model is unloaded (LM Studio: 60)
   models?: Record<string, { contextLength?: number; parallel?: number }>; // per-model load settings
 };
