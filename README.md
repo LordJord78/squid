@@ -10,7 +10,9 @@ Squid is a small rebuild of two programs, made to learn how they work:
 - **Claude Code's agent and safety modes.** The model can read and edit the folder you start it in,
   but only through a permission gate with manual, auto and plan modes.
 
-It ends with a tiny engine of our own in TypeScript, so you can see what llama.cpp does inside.
+It ends with a tiny engine of our own in TypeScript, so you can see what llama.cpp does inside: a
+tokenizer, a transformer and a sampler, which Squid can run as a runtime in place of llama.cpp (CPU, small
+Llama-style models such as SmolLM2-135M).
 
 It is built one small step at a time. Every step is one git commit with an explained walkthrough note
 in the Obsidian vault (`65 LEARNING/Squid/`).
@@ -36,7 +38,8 @@ squid chat                # the agent in the terminal, working on this folder
 squid web                 # the same in your browser (a private link for this folder; Ctrl+C stops it)
 squid ask "…"             # one question, streamed
 squid tokenize 27b "…"    # the tokens a model reads for some text (from its own vocabulary)
-squid next smol "…"       # Squid's own TypeScript engine on the CPU: the likeliest next tokens
+squid next smol "…"       # Squid's own TypeScript engine on the CPU: the next token's chances, then more
+squid load smol --runtime squid   # run a model in Squid's own engine; then chat with it as with any model
 squid ps                  # what's loaded (models loaded on demand unload after 60 min unused)
 squid unload --all        # free the GPU
 squid server stop         # stop the background server
@@ -44,6 +47,7 @@ squid server stop         # stop the background server
 
 Settings live in `~/.squid/config.json`, e.g.
 `{"defaultModel": "qwen3.8-27b-text", "models": {"qwen3.8-27b-text": {"contextLength": 49152}}}`.
+A model entry can also say `"runtime": "squid"`, so it always loads in Squid's own engine.
 The OpenAI-style API is at `http://127.0.0.1:1235/v1` (LM Studio uses 1234).
 
 ## Develop it
@@ -54,6 +58,8 @@ npm run check             # type check
 npm run capture:lmstudio  # re-record the real LM Studio into golden/lmstudio/
 npm run capture:tokens    # re-record llama.cpp's tokenizer into golden/llamacpp/ (CPU only)
 npm run capture:forward   # re-record llama.cpp's next-token predictions for SmolLM2 (CPU only)
+npm run capture:sampling  # re-record llama.cpp's sampling, chat template and chats for SmolLM2 (CPU only)
+npm run capture:lmstudio-smol  # re-record LM Studio chatting with SmolLM2 (load it in LM Studio first)
 ```
 
 Replay any step with `git log --oneline` and `git show <sha>`.
@@ -62,8 +68,8 @@ Replay any step with `git log --oneline` and `git show <sha>`.
 
 | Path | What it is |
 |---|---|
-| `src/` | Squid itself (filled in step by step) |
+| `src/` | Squid itself (17 steps; `runtime.ts`, `transformer.ts`, `sampler.ts` and `tokenizer.ts` are the engine of its own) |
 | `test/` | `node:test` tests, many comparing Squid against `golden/` |
 | `golden/lmstudio/` | Recordings of the real LM Studio: what Squid must match |
-| `golden/llamacpp/` | Recordings of llama.cpp itself (raw engine replies, its tokenizer) |
+| `golden/llamacpp/` | Recordings of llama.cpp itself (raw engine replies, its tokenizer, predictions, sampling) |
 | `runtime/` | Downloaded llama.cpp engine (not committed) |

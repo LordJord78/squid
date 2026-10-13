@@ -1,0 +1,480 @@
+{
+ "model": "smollm2-135m-instruct (SmolLM2-135M-Instruct-Q8_0.gguf)",
+ "app": "LM Studio 0.4.23",
+ "chats": [
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "settings": {
+    "temperature": 0
+   },
+   "content": "The capital of France is Paris. It's a city that has been a beacon for art, culture, and innovation since ancient times. Paris is known for its iconic landmarks like the Eiffel Tower,",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 37,
+    "completion_tokens": 40,
+    "total_tokens": 77,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 564.988120762589,
+    "time_to_first_token": 0.028385,
+    "generation_time": 0.09741300000000001,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "settings": {
+    "temperature": 0,
+    "repeat_penalty": 1
+   },
+   "content": "The capital of France is Paris. It is a city known for its historical landmarks, cultural institutions, and cultural attractions. Paris is a major global city, and its population is approximately 2.2",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 37,
+    "completion_tokens": 40,
+    "total_tokens": 77,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 743.7212761494309,
+    "time_to_first_token": 0.0025099999999999996,
+    "generation_time": 0.054949,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "settings": {
+    "seed": 42
+   },
+   "content": "The capital of France is Paris. It's located in the southern part of the country and is known for its historic landmarks like the Eiffel Tower and the Louvre Museum.",
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 37,
+    "completion_tokens": 36,
+    "total_tokens": 73,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 693.0144146998258,
+    "time_to_first_token": 0.0016870000000000001,
+    "generation_time": 0.052190999999999994,
+    "stop_reason": "eosFound"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "What is the capital of France?"
+    }
+   ],
+   "settings": {
+    "seed": 42,
+    "temperature": 0.8,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "repeat_penalty": 1
+   },
+   "content": "The capital of France is Paris. It is a city located in the heart of the European continent, known for its historical landmarks, cultural richness, and cultural significance. Paris is also a major center for",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 37,
+    "completion_tokens": 40,
+    "total_tokens": 77,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 702.4622201408527,
+    "time_to_first_token": 0.00176,
+    "generation_time": 0.057279,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You answer in one short sentence."
+    },
+    {
+     "role": "user",
+     "content": "Why is the sky blue?"
+    }
+   ],
+   "settings": {
+    "temperature": 0
+   },
+   "content": "The reason why the sky appears blue lies in the way our eyes perceive light and color. When sunlight enters Earth's atmosphere, it encounters tiny particles called atoms and molecules of gases such as nitrogen and oxygen",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 27,
+    "completion_tokens": 40,
+    "total_tokens": 67,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 654.2526421741319,
+    "time_to_first_token": 0.009998,
+    "generation_time": 0.069608,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You answer in one short sentence."
+    },
+    {
+     "role": "user",
+     "content": "Why is the sky blue?"
+    }
+   ],
+   "settings": {
+    "temperature": 0,
+    "repeat_penalty": 1
+   },
+   "content": "The sky appears blue because of the way our eyes perceive the color of the sky. When sunlight enters the Earth's atmosphere, it encounters tiny particles called blue and violet light. These particles scatter the shorter",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 27,
+    "completion_tokens": 40,
+    "total_tokens": 67,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 830.1228156063089,
+    "time_to_first_token": 0.001279,
+    "generation_time": 0.048260000000000004,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You answer in one short sentence."
+    },
+    {
+     "role": "user",
+     "content": "Why is the sky blue?"
+    }
+   ],
+   "settings": {
+    "seed": 42
+   },
+   "content": "The reason for the sky being blue lies in the way light scatters across different wavelengths of electromagnetic radiation, specifically blues and greens. When sunlight enters Earth's atmosphere at noon, it encounters a range of",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 27,
+    "completion_tokens": 40,
+    "total_tokens": 67,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 687.139912257519,
+    "time_to_first_token": 0.001469,
+    "generation_time": 0.058226,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "system",
+     "content": "You answer in one short sentence."
+    },
+    {
+     "role": "user",
+     "content": "Why is the sky blue?"
+    }
+   ],
+   "settings": {
+    "seed": 42,
+    "temperature": 0.8,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "repeat_penalty": 1
+   },
+   "content": "The sky blue because of the way the sun's rays scattered and scattered together by the Earth's atmosphere, creating the blue color we perceive when looking at the sky. This process is known as Rayleigh",
+   "finish_reason": "length",
+   "usage": {
+    "prompt_tokens": 27,
+    "completion_tokens": 40,
+    "total_tokens": 67,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 780.2965126748164,
+    "time_to_first_token": 0.001785,
+    "generation_time": 0.051766,
+    "stop_reason": "maxPredictedTokensReached"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "Name a colour."
+    },
+    {
+     "role": "assistant",
+     "content": "Blue."
+    },
+    {
+     "role": "user",
+     "content": "Another one?"
+    }
+   ],
+   "settings": {
+    "temperature": 0
+   },
+   "content": "Green.",
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 50,
+    "completion_tokens": 3,
+    "total_tokens": 53,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 218.22149481723952,
+    "time_to_first_token": 0.010386,
+    "generation_time": 0.019551,
+    "stop_reason": "eosFound"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "Name a colour."
+    },
+    {
+     "role": "assistant",
+     "content": "Blue."
+    },
+    {
+     "role": "user",
+     "content": "Another one?"
+    }
+   ],
+   "settings": {
+    "temperature": 0,
+    "repeat_penalty": 1
+   },
+   "content": "Green.",
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 50,
+    "completion_tokens": 3,
+    "total_tokens": 53,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 870.7009142359599,
+    "time_to_first_token": 0.001434,
+    "generation_time": 0.003731,
+    "stop_reason": "eosFound"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "Name a colour."
+    },
+    {
+     "role": "assistant",
+     "content": "Blue."
+    },
+    {
+     "role": "user",
+     "content": "Another one?"
+    }
+   ],
+   "settings": {
+    "seed": 42
+   },
+   "content": "Red.",
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 50,
+    "completion_tokens": 3,
+    "total_tokens": 53,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 777.6049766718506,
+    "time_to_first_token": 0.001645,
+    "generation_time": 0.004217,
+    "stop_reason": "eosFound"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  },
+  {
+   "messages": [
+    {
+     "role": "user",
+     "content": "Name a colour."
+    },
+    {
+     "role": "assistant",
+     "content": "Blue."
+    },
+    {
+     "role": "user",
+     "content": "Another one?"
+    }
+   ],
+   "settings": {
+    "seed": 42,
+    "temperature": 0.8,
+    "top_k": 40,
+    "top_p": 0.95,
+    "min_p": 0.05,
+    "repeat_penalty": 1
+   },
+   "content": "Another one!",
+   "finish_reason": "stop",
+   "usage": {
+    "prompt_tokens": 50,
+    "completion_tokens": 4,
+    "total_tokens": 54,
+    "completion_tokens_details": {
+     "reasoning_tokens": 0
+    }
+   },
+   "stats": {
+    "tokens_per_second": 845.3085376162298,
+    "time_to_first_token": 0.00149,
+    "generation_time": 0.005039,
+    "stop_reason": "eosFound"
+   },
+   "runtime": {
+    "name": "llama.cpp-win-x86_64-nvidia-cuda12-avx2",
+    "version": "2.56.0",
+    "supported_formats": [
+     "gguf"
+    ]
+   }
+  }
+ ]
+}

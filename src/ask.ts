@@ -3,7 +3,7 @@
 import { ensureServer } from "./daemon.ts";
 import { agentTurn, startConversation } from "./agent.ts";
 import { createInterface } from "node:readline";
-import { dim } from "./reply.ts";
+import { dim, pickModel } from "./reply.ts";
 import { newSession, nobodyToAsk } from "./tools.ts";
 import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
 import type { Mode } from "./rules.ts";
@@ -23,7 +23,8 @@ export async function ask(prompt: string, options: AskOptions): Promise<void> {
     mode: options.mode ?? "manual",
     choosePlan: keyboard ? keyboardPlanChooser(askOnce) : undefined,
   });
-  const { reply } = await agentTurn(base, options.model, messages, session);
+  const model = options.model && (await pickModel(base, options.model));
+  const { reply } = await agentTurn(base, model, messages, session);
   // Like `lms chat --stats`, measured here at the receiving end.
   if (options.stats && reply.usage && reply.tokensPerSecond !== undefined) {
     const thinking = reply.usage.completion_tokens_details?.reasoning_tokens ?? 0;

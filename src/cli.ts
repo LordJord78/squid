@@ -3,7 +3,7 @@
 import { parseArgs } from "node:util";
 import { readGgufHeader, describeModel } from "./gguf.ts";
 import { listModels, type ShelfModel } from "./models.ts";
-import { load, loadOnDemand, running, secondsLeft, status, unload, type Engine } from "./engine.ts";
+import { load, loadOnDemand, running, secondsLeft, status, unload, type Engine, type Runtime } from "./engine.ts";
 import { startServer, DEFAULT_PORT } from "./server.ts";
 import { ensureServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
 import { readConfig } from "./config.ts";
@@ -13,8 +13,10 @@ import { chat } from "./chat.ts";
 import { web } from "./web.ts";
 import { decode, encode, loadVocab, piece } from "./tokenizer.ts";
 import { feed, forward, loadModel, newState, top } from "./transformer.ts";
+import { candidates, DEFAULTS, mt19937, pick } from "./sampler.ts";
 import { dim } from "./reply.ts";
 import { readFileSync } from "node:fs";
+import { randomInt } from "node:crypto";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -26,12 +28,13 @@ const USAGE = `usage:
                             the same, in your browser, for the folder you're in (Ctrl+C stops it)
   squid tokenize <model> "<text>" [--ids] [--no-special] [--file PATH]
                             the tokens a model reads for some text (its own vocabulary, no GPU)
-  squid next <model> "<text>" [--steps N]
-                            Squid's own TypeScript engine (CPU): the likeliest next tokens, then N more
+  squid next <model> "<text>" [--steps N] [--temperature T] [--top-k K] [--top-p P] [--min-p P] [--seed N]
+                            Squid's own TypeScript engine (CPU): the next token's chances, then N more
   squid ls                  list your models
   squid info <model.gguf>   what's inside one model file
-  squid load <model> [--context N] [--parallel N] [--identifier NAME]
-                            start the engine with a model ("27b" is enough if only one name contains it)
+  squid load <model> [--context N] [--parallel N] [--identifier NAME] [--runtime squid]
+                            start the engine with a model ("27b" is enough if only one name contains it);
+                            --runtime squid runs it in Squid's own TypeScript engine instead of llama.cpp
   squid ps                  models that are loaded now
   squid unload <name>|--all stop the engine and free the GPU ("27b" is enough here too)
   squid server start|stop|status
@@ -78,10 +81,17 @@ function modeOption(text: string | undefined): Mode | undefined {
 }
 
 // "--context 49152" arrives as text; accept only a positive whole number.
-function whole(text: string | undefined, flag: string): number | undefined {
+function whole(text: string | undefined, flag: string, least = 1): number | undefined {
   if (text === undefined) return undefined;
   const n = Number(text);
-  if (!Number.isInteger(n) || n < 1) fail(`${flag} needs a whole number, got "${text}"`);
+  if (!Number.isInteger(n) || n < least) fail(`${flag} needs a whole number, got "${text}"`);
+  return n;
+}
+
+function decimal(text: string | undefined, flag: string): number | undefined {
+  if (text === undefined) return undefined;
+  const n = Number(text);
+  if (!Number.isFinite(n) || n < 0) fail(`${flag} needs a number of 0 or more, got "${text}"`);
   return n;
 }
 
@@ -195,9 +205,24 @@ switch (command) {
   }
   case "next": {
     // Squid's own engine (step 16): every number computed in TypeScript, on the CPU, no llama.cpp.
-    const { values, positionals } = parseArgs({ args, allowPositionals: true, options: { steps: { type: "string" } } });
-    if (positionals.length < 2) fail('usage: squid next <model> "<text>" [--steps N]');
+    const { values, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: {
+        steps: { type: "string" }, temperature: { type: "string" }, "top-k": { type: "string" }, "top-p": { type: "string" },
+        "min-p": { type: "string" }, seed: { type: "string" },
+      },
+    });
+    if (positionals.length < 2) fail('usage: squid next <model> "<text>" [--steps N] [--temperature T] [--top-k K] [--top-p P] [--min-p P] [--seed N]');
     const steps = whole(values.steps, "--steps") ?? 12;
+    // llama.cpp's defaults unless given; a seed of its own each run unless given (step 17).
+    const sampling = {
+      temperature: decimal(values.temperature, "--temperature") ?? DEFAULTS.temperature,
+      topK: whole(values["top-k"], "--top-k", 0) ?? DEFAULTS.topK,
+      topP: decimal(values["top-p"], "--top-p") ?? DEFAULTS.topP,
+      minP: decimal(values["min-p"], "--min-p") ?? DEFAULTS.minP,
+      seed: whole(values.seed, "--seed", 0) ?? randomInt(2 ** 32),
+    };
     const shelf = pickModel(positionals[0]);
     let model;
     try {
@@ -212,15 +237,22 @@ switch (command) {
     const promptMs = (performance.now() - started) / state.pos;
     console.log(dim(`${shelf.key} in Squid's TypeScript engine, on the CPU (${state.pos} prompt tokens, ${promptMs.toFixed(0)} ms each)\n`));
     const percent = (logprob: number) => `${(Math.exp(logprob) * 100).toFixed(logprob > -4.6 ? 0 : 1)}%`;
-    console.log(`next token:  ${top(logits, 5).map((c) => `${JSON.stringify(piece(model.vocab, c.id))} ${percent(c.logprob)}`).join("   ")}\n`);
-    // Then follow the likeliest token each time ("greedy"; step 17 adds proper sampling).
+    console.log(`next token:  ${top(logits, 5).map((c) => `${JSON.stringify(piece(model.vocab, c.id))} ${percent(c.logprob)}`).join("   ")}`);
+    // What the sampling chain leaves of them, and each one's chance of being picked.
+    const left = candidates(logits, sampling);
+    const { temperature, topK, topP, minP } = sampling;
+    console.log(dim(`after top-k ${topK} → top-p ${topP} → min-p ${minP} → temperature ${temperature}: ${left.length} left`));
+    const more = left.length > 5 ? "   …" : "";
+    console.log(`             ${left.slice(0, 5).map((c) => `${JSON.stringify(piece(model.vocab, c.id))} ${percent(Math.log(c.p))}`).join("   ")}${more}\n`);
+    // Then roll the dice for each token in turn.
+    const random = mt19937(sampling.seed).random;
     process.stdout.write(prompt);
     const generated: number[] = [];
     let shown = "";
     const genStart = performance.now();
     for (let i = 0; i < steps; i++) {
-      const next = top(logits, 1)[0].id;
-      if (next === model.vocab.eos) break;
+      const next = pick(candidates(logits, sampling), random);
+      if (model.vocab.ends.has(next)) break;
       generated.push(next);
       const text = decode(model.vocab, generated);
       if (!text.endsWith("�")) { // a character split across tokens is shown once it's whole
@@ -230,7 +262,8 @@ switch (command) {
       logits = forward(model, state, next);
     }
     const seconds = (performance.now() - genStart) / 1000;
-    console.log(dim(`\n\n(${generated.length} tokens, ${(generated.length / seconds).toFixed(1)} tokens/s)`));
+    const again = temperature > 0 ? `; --seed ${sampling.seed} gives this text again` : "";
+    console.log(dim(`\n\n(${generated.length} tokens, ${(generated.length / seconds).toFixed(1)} tokens/s${again})`));
     break;
   }
   case "help":
@@ -275,16 +308,20 @@ switch (command) {
     const { values, positionals } = parseArgs({
       args,
       allowPositionals: true,
-      options: { context: { type: "string" }, parallel: { type: "string" }, identifier: { type: "string" } },
+      options: { context: { type: "string" }, parallel: { type: "string" }, identifier: { type: "string" }, runtime: { type: "string" } },
     });
-    if (!positionals[0]) fail("usage: squid load <model> [--context N] [--parallel N]");
+    if (!positionals[0]) fail("usage: squid load <model> [--context N] [--parallel N] [--runtime squid]");
+    if (values.runtime && values.runtime !== "squid" && values.runtime !== "llama.cpp") fail(`--runtime is "squid" or "llama.cpp", not "${values.runtime}"`);
     const model = pickModel(positionals[0]);
     const progress = counter(`Loading ${model.key}`);
     let engine;
     try {
       engine = await load(
         model,
-        { contextLength: whole(values.context, "--context"), parallel: whole(values.parallel, "--parallel"), identifier: values.identifier },
+        {
+          contextLength: whole(values.context, "--context"), parallel: whole(values.parallel, "--parallel"), identifier: values.identifier,
+          runtime: values.runtime as Runtime | undefined,
+        },
         progress.tick,
       );
     } catch (err) {

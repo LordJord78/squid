@@ -23,9 +23,14 @@ export type Vocab = {
   specials: string[]; // control, user-defined and unknown tokens, longest first
   bos?: number;
   eos?: number; // end of text: the model writes it when it's finished (step 16 stops there)
+  ends: Set<number>; // every token that ends the model's turn (llama.cpp's "end of generation" set)
   addBos: boolean;
   cache: Map<string, number[]>; // pieces already worked out (the same words come up again and again)
 };
+
+// The chat markers llama.cpp also treats as the end of a turn, besides the end-of-text token
+// (src/llama-vocab.cpp keeps a longer list; these are the Llama-style ones).
+const END_MARKERS = ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "<|end_of_text|>"];
 
 // How each model family cuts text into pieces before BPE. From llama.cpp b11580 (src/llama-vocab.cpp),
 // which took them from each model's tokenizer.json. \p{L} = any letter, \p{N} = any digit or number,
@@ -53,15 +58,17 @@ export function loadVocab(path: string): Vocab {
   const merges = (list("tokenizer.ggml.merges") as string[] | undefined) ?? [];
   const bos = meta.get("tokenizer.ggml.bos_token_id");
   const eos = meta.get("tokenizer.ggml.eos_token_id");
+  const ids = new Map(tokens.map((text, id) => [text, id]));
   return {
     tokens,
     types,
-    ids: new Map(tokens.map((text, id) => [text, id])),
+    ids,
     ranks: new Map(merges.map((rule, rank) => [rule, rank])),
     split,
     specials: tokens.filter((text, id) => text && [CONTROL, USER_DEFINED, UNKNOWN].includes(types[id])).sort((a, b) => b.length - a.length),
     bos: typeof bos === "number" ? bos : undefined,
     eos: typeof eos === "number" ? eos : undefined,
+    ends: new Set([eos, ...END_MARKERS.map((marker) => ids.get(marker))].filter((id) => typeof id === "number")),
     addBos: meta.get("tokenizer.ggml.add_bos_token") === true,
     cache: new Map(),
   };
@@ -161,7 +168,7 @@ export function decode(vocab: Vocab, ids: number[], options: { special?: boolean
   return Buffer.concat(ids.map((id) => tokenBytes(vocab, id, options.special ?? true))).toString("utf8");
 }
 
-function tokenBytes(vocab: Vocab, id: number, special: boolean): Buffer {
+export function tokenBytes(vocab: Vocab, id: number, special: boolean): Buffer {
   const text = vocab.tokens[id];
   if (text === undefined) throw new Error(`there's no token ${id} (the vocabulary has ${vocab.tokens.length})`);
   const type = vocab.types[id];

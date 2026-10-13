@@ -256,16 +256,22 @@ export function logprobs(logits: Float32Array): Float32Array {
   return logits.map((l) => l - logTotal);
 }
 
-// The k most likely next tokens, most likely first. One pass, keeping a short list in order.
+// The k most likely next tokens, most likely first.
 export function top(logits: Float32Array, k = 5): { id: number; logprob: number }[] {
   const lp = logprobs(logits);
+  return highest(lp, k).map((id) => ({ id, logprob: lp[id] }));
+}
+
+// The positions of the k highest scores, highest first. One pass, keeping a short list in order, rather
+// than sorting all 49,152 (step 17's sampler uses it for top-k, once per token).
+export function highest(scores: Float32Array, k: number): number[] {
   const best: number[] = [];
-  for (let id = 0; id < lp.length; id++) {
-    if (best.length === k && lp[id] <= lp[best[k - 1]]) continue; // not better than the last on the list
+  for (let id = 0; id < scores.length; id++) {
+    if (best.length === k && scores[id] <= scores[best[k - 1]]) continue; // not better than the last on the list
     let at = best.length;
-    while (at > 0 && lp[best[at - 1]] < lp[id]) at--;
+    while (at > 0 && scores[best[at - 1]] < scores[id]) at--;
     best.splice(at, 0, id);
     if (best.length > k) best.pop();
   }
-  return best.map((id) => ({ id, logprob: lp[id] }));
+  return best;
 }

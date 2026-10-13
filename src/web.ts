@@ -11,7 +11,7 @@ import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
 import { answerFrom, planChoiceFrom } from "./approve.ts";
 import { readConfig } from "./config.ts";
 import { ensureServer } from "./daemon.ts";
-import { contextLimit, type Message, type Output } from "./reply.ts";
+import { contextLimit, pickModel, type Message, type Output } from "./reply.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { sseEvent } from "./sse.ts";
 import { newSession, writeAtomically, type Approval } from "./tools.ts";
@@ -238,14 +238,15 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
 export async function web(options: { model?: string; mode?: Mode; port?: number; open: boolean }): Promise<void> {
   const base = `http://127.0.0.1:${(await ensureServer()).port}`;
   const root = process.cwd();
-  const page = await startWeb({ base, root, model: options.model, mode: options.mode ?? readConfig().defaultMode ?? "manual", port: options.port });
+  const model = options.model && (await pickModel(base, options.model));
+  const page = await startWeb({ base, root, model, mode: options.mode ?? readConfig().defaultMode ?? "manual", port: options.port });
   console.log(`Squid's page for ${root}:\n\n    ${page.url}\n\nOnly this PC can open it, and only with that link. Ctrl+C here stops it.`);
   // rundll32 hands the link to Windows, which opens your default browser. No shell reads the link (step 11).
   if (options.open) spawn("rundll32", ["url.dll,FileProtocolHandler", page.url], { detached: true, stdio: "ignore" }).unref();
 }
 
 // Compared in constant time: how long a wrong guess takes to refuse says nothing about how close it was.
-function keyMatches(header: string | undefined, token: string): boolean {
+export function keyMatches(header: string | undefined, token: string): boolean {
   const given = Buffer.from(header ?? "");
   const wanted = Buffer.from(`Bearer ${token}`);
   return given.length === wanted.length && timingSafeEqual(given, wanted);

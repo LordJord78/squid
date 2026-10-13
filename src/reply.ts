@@ -91,6 +91,16 @@ export async function streamReply(
   return reply;
 }
 
+// An exact model name, or the one whose name contains what was typed (as `squid load` accepts): `--model
+// smol`, `/model 9b`.
+export async function pickModel(base: string, query: string): Promise<string> {
+  const ids: string[] = (await (await fetch(`${base}/v1/models`)).json()).data.map((m: any) => m.id);
+  if (ids.includes(query)) return query;
+  const matches = ids.filter((id) => id.includes(query.toLowerCase()));
+  if (matches.length === 1) return matches[0];
+  throw new Error(matches.length ? `"${query}" matches ${matches.join(", ")}` : `no model matches "${query}" (see squid ls)`);
+}
+
 // The model's context size, as the server reports it for a loaded model (/api/v0/models). The chat and
 // the browser page use it for the "how full is the model's memory" meter.
 export async function contextLimit(base: string, model: string): Promise<number | undefined> {

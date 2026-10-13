@@ -1,5 +1,6 @@
 // Starting and stopping the engine. For each loaded model Squid runs one llama.cpp `llama-server`
 // in the background on a private port, and writes a small record so `ps` and `unload` can find it later.
+// Since step 17 a model can run in Squid's own runtime instead (runtime.ts), behind the same door.
 import { spawn, execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -12,8 +13,14 @@ import { readConfig, SQUID_HOME } from "./config.ts";
 
 // Downloaded by `npm run engine:get` (scripts/get-engine.ps1): llama.cpp b11580, CUDA 13 build.
 export const ENGINE = fileURLToPath(new URL("../runtime/llama.cpp/llama-server.exe", import.meta.url));
-// How replies name the engine, like LM Studio's "llama.cpp-win-x86_64-nvidia-cuda12-avx2" 2.56.0.
-export const RUNTIME = { name: "llama.cpp-win-x86_64-nvidia-cuda13", version: engineVersion() };
+// Squid's own runtime: the TypeScript engine, in a Node process of its own.
+const OWN_RUNTIME = fileURLToPath(new URL("./runtime.ts", import.meta.url));
+export type Runtime = "llama.cpp" | "squid";
+// How replies name each runtime, like LM Studio's "llama.cpp-win-x86_64-nvidia-cuda12-avx2" 2.56.0.
+export const RUNTIMES: Record<Runtime, { name: string; version: string }> = {
+  "llama.cpp": { name: "llama.cpp-win-x86_64-nvidia-cuda13", version: engineVersion() },
+  squid: { name: "squid-typescript-cpu", version: JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version },
+};
 const LOADED = join(SQUID_HOME, "loaded"); // one record per running engine
 const LOGS = join(SQUID_HOME, "logs");
 
@@ -34,9 +41,10 @@ export type Engine = {
   jit: boolean; // loaded on demand by a request, not by `squid load`
   ttlSeconds?: number; // unload after this long unused (LM Studio gives on-demand models 60 minutes)
   lastUsed: number; // when it last answered, in ms since 1970: the idle timer counts from here
+  runtime?: Runtime; // which engine runs it; records written before step 17 have none: llama.cpp
 };
 
-export type LoadOptions = { contextLength?: number; parallel?: number; identifier?: string; jit?: boolean; ttlSeconds?: number };
+export type LoadOptions = { contextLength?: number; parallel?: number; identifier?: string; jit?: boolean; ttlSeconds?: number; runtime?: Runtime };
 type Sizes = { contextLength?: number; parallel?: number };
 
 // Settings LM Studio saved for a model when you tuned it there: flash attention, KV cache type, parallel slots.
@@ -101,9 +109,12 @@ export function engineArgs(model: ShelfModel, identifier: string, port: number, 
 // Makes sure a model is loaded and returns its engine. If it's already loaded, or another Squid is
 // loading it right now, this waits for that one instead of starting a second engine.
 export async function load(model: ShelfModel, options: LoadOptions = {}, onWait?: (seconds: number) => void): Promise<Engine> {
-  if (!existsSync(ENGINE)) throw new Error("the engine isn't downloaded yet: run `npm run engine:get`");
+  const configured = readConfig().models?.[model.key] ?? {};
+  const runtime = options.runtime ?? configured.runtime ?? "llama.cpp";
+  if (runtime === "llama.cpp" && !existsSync(ENGINE)) throw new Error("the engine isn't downloaded yet: run `npm run engine:get`");
   const identifier = options.identifier ?? model.key;
-  const settings = settingsFor(lmstudioTuning(model), readConfig().models?.[model.key] ?? {}, options);
+  const settings = settingsFor(lmstudioTuning(model), configured, options);
+  if (runtime === "squid") settings.parallel = 1; // one slot: requests take turns
   mkdirSync(LOADED, { recursive: true });
   mkdirSync(LOGS, { recursive: true });
   const log = join(LOGS, `${fileName(identifier)}.log`);
@@ -111,7 +122,7 @@ export async function load(model: ShelfModel, options: LoadOptions = {}, onWait?
     identifier, key: model.key, pid: 0, port: 0, apiKey: randomBytes(24).toString("hex"),
     contextLength: settings.contextLength, parallel: settings.parallel, sizeBytes: model.sizeBytes,
     architecture: model.architecture, quantization: model.quantization, log,
-    loader: process.pid, jit: options.jit ?? false, ttlSeconds: options.ttlSeconds, lastUsed: Date.now(),
+    loader: process.pid, jit: options.jit ?? false, ttlSeconds: options.ttlSeconds, lastUsed: Date.now(), runtime,
   };
 
   // The record doubles as a lock. Flag "wx" means "create it, but fail if it already exists", and the
@@ -134,7 +145,10 @@ export async function load(model: ShelfModel, options: LoadOptions = {}, onWait?
   }
 
   // detached + unref: the engine keeps running after this command exits, like a background service.
-  const child = spawn(ENGINE, engineArgs(model, identifier, engine.port, engine.apiKey, settings), {
+  // Squid's runtime takes llama-server's command line, run by the same Node that runs Squid.
+  const args = engineArgs(model, identifier, engine.port, engine.apiKey, settings);
+  const [program, programArgs] = runtime === "squid" ? [process.execPath, [OWN_RUNTIME, ...args]] : [ENGINE, args];
+  const child = spawn(program, programArgs, {
     detached: true,
     stdio: ["ignore", openSync(log, "w"), openSync(log, "a")],
     windowsHide: true,
@@ -210,7 +224,7 @@ export function running(quick = false): Engine[] {
   for (const name of readdirSync(LOADED)) {
     const engine: Engine = JSON.parse(readFileSync(join(LOADED, name), "utf8"));
     // pid 0 means "being set up": alive as long as the Squid that's loading it is.
-    const alive = engine.pid === 0 ? isAlive(engine.loader) : quick ? isAlive(engine.pid) : isEngine(engine.pid);
+    const alive = engine.pid === 0 ? isAlive(engine.loader) : quick ? isAlive(engine.pid) : isEngine(engine);
     if (alive) engines.push(engine);
     else rmSync(join(LOADED, name), { force: true });
   }
@@ -229,8 +243,14 @@ export async function status(engine: Engine): Promise<"LOADING" | "IDLE" | "GENE
 export async function unload(identifier: string): Promise<boolean> {
   const engine = running().find((e) => e.identifier === identifier);
   if (!engine || engine.pid === 0) return false; // not loaded, or still being set up by another Squid
-  process.kill(engine.pid);
-  for (let waited = 0; isEngine(engine.pid) && waited < 10_000; waited += 100) {
+  if (engine.runtime === "squid") {
+    // Asked to leave, not ended by its process ID: every Node program is called node.exe, so after a
+    // crash the ID could belong to another one (Claude Code, say). Only the runtime knows the key.
+    await fetch(`http://127.0.0.1:${engine.port}/shutdown`, { method: "POST", headers: { Authorization: `Bearer ${engine.apiKey}` } }).catch(() => {});
+  } else {
+    process.kill(engine.pid);
+  }
+  for (let waited = 0; isEngine(engine) && waited < 10_000; waited += 100) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   rmSync(recordFile(identifier), { force: true });
@@ -256,15 +276,16 @@ export function isAlive(pid: number): boolean {
   }
 }
 
-// Is this process ID still a llama-server? Windows reuses IDs, so "some process has this ID" isn't
-// enough: without the name check, `unload` after a crash could end an unrelated program.
-function isEngine(pid: number): boolean {
+// Is this process ID still the engine's program? Windows reuses IDs, so "some process has this ID"
+// isn't enough: without the name check, `unload` after a crash could end an unrelated program.
+function isEngine(engine: Engine): boolean {
+  const program = engine.runtime === "squid" ? "node" : "llama-server";
   try {
     if (process.platform === "win32") {
-      const row = execFileSync("tasklist", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
-      return row.toLowerCase().startsWith('"llama-server.exe"');
+      const row = execFileSync("tasklist", ["/FI", `PID eq ${engine.pid}`, "/FO", "CSV", "/NH"], { encoding: "utf8", windowsHide: true });
+      return row.toLowerCase().startsWith(`"${program}.exe"`);
     }
-    return execFileSync("ps", ["-p", String(pid), "-o", "comm="], { encoding: "utf8" }).trim().endsWith("llama-server");
+    return execFileSync("ps", ["-p", String(engine.pid), "-o", "comm="], { encoding: "utf8" }).trim().endsWith(program);
   } catch {
     return false;
   }

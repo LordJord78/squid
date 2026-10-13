@@ -4,7 +4,7 @@
 import { createServer, request, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { listModels, type ShelfModel } from "./models.ts";
-import { loadOnDemand, running, RUNTIME, secondsLeft, status, touch, unload, type Engine } from "./engine.ts";
+import { loadOnDemand, running, RUNTIMES, secondsLeft, status, touch, unload, type Engine } from "./engine.ts";
 import { readConfig, type Config } from "./config.ts";
 import { sseData, sseEvent } from "./sse.ts";
 
@@ -165,7 +165,7 @@ async function chat(req: IncomingMessage, res: ServerResponse, sources: Sources,
             stop_reason: STOP_REASONS[r.choices[0].finish_reason] ?? r.choices[0].finish_reason,
           },
           model_info: { arch: engine.architecture, quant: engine.quantization, format: "gguf", context_length: engine.contextLength },
-          runtime: { ...RUNTIME, supported_formats: ["gguf"] },
+          runtime: { ...RUNTIMES[engine.runtime ?? "llama.cpp"], supported_formats: ["gguf"] },
         }
       : { stats: {}, system_fingerprint: engine.identifier }),
   });

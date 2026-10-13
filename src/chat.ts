@@ -3,7 +3,7 @@
 // conversation so far; that list of messages *is* the chat's memory.
 import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
-import { contextLimit, dim, type Message } from "./reply.ts";
+import { contextLimit, dim, pickModel, type Message } from "./reply.ts";
 import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
 import { relative } from "node:path";
 import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
@@ -50,7 +50,7 @@ const MODE_HELP: Record<Mode, string> = {
 export async function chat(options: { model?: string; system?: string; mode?: Mode }): Promise<void> {
   const base = `http://127.0.0.1:${(await ensureServer()).port}`;
   const root = process.cwd(); // the folder the model may look at: wherever you typed `squid`
-  let model = options.model; // undefined: the server picks the loaded or default model
+  let model = options.model && (await pickModel(base, options.model)); // undefined: the server picks the loaded or default model
   let system = options.system;
   let history: Message[] = startConversation(root, system); // [0] is the system message
   let used = 0; // tokens the conversation takes up, from the last reply's usage count
@@ -166,13 +166,4 @@ async function undoLast(session: Session, root: string, question?: (prompt: stri
   applyUndo(session.checkpoints, plan, writeAtomically);
   process.stderr.write(dim(`Undid ${plan.restore.length} file${plan.restore.length === 1 ? "" : "s"}.\n`));
   return undoNote(plan.checkpoint.label, plan.restore.map((s) => name(s.file)));
-}
-
-// An exact model name, or the one whose name contains what was typed (as `squid load` accepts).
-async function pickModel(base: string, query: string): Promise<string> {
-  const ids: string[] = (await (await fetch(`${base}/v1/models`)).json()).data.map((m: any) => m.id);
-  if (ids.includes(query)) return query;
-  const matches = ids.filter((id) => id.includes(query.toLowerCase()));
-  if (matches.length === 1) return matches[0];
-  throw new Error(matches.length ? `"${query}" matches ${matches.join(", ")}` : `no model matches "${query}" (see squid ls)`);
 }

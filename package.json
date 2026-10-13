@@ -1,6 +1,6 @@
 {
   "name": "squid",
-  "version": "0.0.0",
+  "version": "1.0.0",
   "private": true,
   "description": "A local AI you start with one word. A small replica of LM Studio's model server and Claude Code's agent and safety modes, built to learn how they work.",
   "type": "module",
@@ -16,6 +16,8 @@
     "capture:lmstudio": "pwsh -NoProfile -File golden/capture-lmstudio.ps1",
     "capture:tokens": "node golden/capture-tokens.ts",
     "capture:forward": "node golden/capture-forward.ts",
+    "capture:sampling": "node golden/capture-sampling.ts",
+    "capture:lmstudio-smol": "node golden/capture-lmstudio-smol.ts",
     "engine:get": "pwsh -NoProfile -File scripts/get-engine.ps1"
   },
   "devDependencies": {
