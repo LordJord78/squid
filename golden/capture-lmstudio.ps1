@@ -26,6 +26,7 @@ $wasLoaded  = (& $lms ps 2>&1 | Out-String) -match [regex]::Escape($Model)
 
 & $lms server start 2>&1 | Out-Null
 Save "lms-ls.txt" (& $lms ls 2>&1 | Out-String)
+Save "lms-ls.json" (& $lms ls --json 2>$null | Out-String).Trim()
 Save "v1-models.json" (Get-Json "/v1/models")
 Save "api-v0-models.json" (Get-Json "/api/v0/models")
 

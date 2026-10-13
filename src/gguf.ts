@@ -134,6 +134,8 @@ export function describeModel(h: GgufHeader) {
     quantization: fileType === undefined ? undefined : (FILE_TYPES[fileType] ?? `type ${fileType}`),
     contextLength: num(`${arch}.context_length`),
     layers: num(`${arch}.block_count`),
+    // Embedding models turn text into one vector, so they say how to pool token outputs; chat models don't.
+    embedding: h.metadata.has(`${arch}.pooling_type`),
     hasChatTemplate: typeof get("tokenizer.chat_template") === "string",
     tensorCount: h.tensorCount,
     headerBytes: h.headerBytes,
