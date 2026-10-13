@@ -66,3 +66,22 @@ test("a huge result is cut, to protect the context window", () => {
   writeFileSync(join(project, "big.txt"), Array.from({ length: 400 }, () => "x".repeat(100)).join("\n"));
   assert.match(runTool(project, call("read_file", { path: "big.txt" })), /… \(cut: \d+ more characters\)$/);
 });
+
+test("the rulebook guards every tool: read, list and search", () => {
+  const root = tempDir();
+  writeFileSync(join(root, ".env"), "API_KEY=blue-heron-secret");
+  mkdirSync(join(root, "data", "es_holdout"), { recursive: true });
+  writeFileSync(join(root, "data", "es_holdout", "2026.csv"), "blue heron in the holdout");
+  mkdirSync(join(root, "docs", "private"), { recursive: true });
+  writeFileSync(join(root, "docs", "private", "diary.md"), "blue heron in the diary");
+  writeFileSync(join(root, "notes.md"), "blue heron in the notes");
+  mkdirSync(join(root, ".squid"));
+  writeFileSync(join(root, ".squid", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(docs/private/**)"] } }));
+
+  assert.match(runTool(root, call("read_file", { path: ".env" })), /^Error: \.env: Squid never opens/);
+  assert.match(runTool(root, call("read_file", { path: "docs/private/diary.md" })), /^Error: .*denied by rule Read\(docs\/private\/\*\*\)/);
+  assert.match(runTool(root, call("list_files", { path: "data" })), /^es_holdout\/ \(off limits\)$/);
+  assert.match(runTool(root, call("list_files", {})), /^\.env \(off limits\)$/m);
+  assert.equal(runTool(root, call("search", { text: "blue heron" })), "notes.md:1: blue heron in the notes", "the other three are skipped");
+  assert.match(runTool(root, call("search", { text: "x", path: "data/es_holdout" })), /^Error: .*never opens/);
+});

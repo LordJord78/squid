@@ -2,6 +2,7 @@
 // look (list, read, search); nothing can change a file yet. Every path must stay inside that folder.
 import { readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { decide, loadRulebook, type Rulebook } from "./rules.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string }; // arguments: JSON text, as the model wrote it
 
@@ -25,8 +26,9 @@ export const TOOLS = [
 // result, so it can correct itself, instead of stopping the conversation.
 export class ToolError extends Error {}
 
-// Runs one tool call and returns what the model gets to see, always as text.
-export function runTool(root: string, call: Pick<ToolCall, "name" | "arguments">): string {
+// Runs one tool call and returns what the model gets to see, always as text. Every path is checked twice:
+// the folder fence (step 08), then the rulebook (step 09).
+export function runTool(root: string, call: Pick<ToolCall, "name" | "arguments">, book: Rulebook = loadRulebook(root)): string {
   let args;
   try {
     args = JSON.parse(call.arguments || "{}");
@@ -35,9 +37,9 @@ export function runTool(root: string, call: Pick<ToolCall, "name" | "arguments">
   }
   try {
     const result =
-      call.name === "list_files" ? listFiles(root, args.path ?? ".")
-      : call.name === "read_file" ? readFile(root, String(args.path ?? ""), args.offset ?? undefined, args.limit ?? undefined) // null → default
-      : call.name === "search" ? search(root, String(args.text ?? ""), args.path ?? ".")
+      call.name === "list_files" ? listFiles(root, args.path ?? ".", book)
+      : call.name === "read_file" ? readFile(root, String(args.path ?? ""), book, args.offset ?? undefined, args.limit ?? undefined) // null → default
+      : call.name === "search" ? search(root, String(args.text ?? ""), args.path ?? ".", book)
       : `Error: there's no tool called ${call.name}. The tools are list_files, read_file and search.`;
     // Whatever a tool returns is added to the conversation, and the context window is finite (step 07).
     return result.length > 24_000 ? `${result.slice(0, 24_000)}\n… (cut: ${result.length - 24_000} more characters)` : result;
@@ -63,17 +65,31 @@ export function inside(root: string, requested: string): string {
   return real;
 }
 
-function listFiles(root: string, path: string): string {
+// Reading needs the rulebook's "allow". Squid can't ask you yet (prompts arrive in step 10), so "ask" is
+// refused for now, with the reason.
+function checkRead(root: string, requested: string, real: string, book: Rulebook): void {
+  const verdict = decide({ tool: "Read", path: resolve(realpathSync.native(root), requested), real }, book);
+  if (verdict.outcome === "deny") throw new ToolError(`${requested}: ${verdict.reason}`);
+  if (verdict.outcome === "ask") throw new ToolError(`${requested}: ${verdict.reason}; asking isn't possible yet, so it's refused`);
+}
+const readable = (path: string, book: Rulebook) => decide({ tool: "Read", path, real: path }, book).outcome === "allow";
+
+function listFiles(root: string, path: string, book: Rulebook): string {
   const dir = inside(root, path);
+  checkRead(root, path, dir, book);
   if (!statSync(dir).isDirectory()) throw new ToolError(`${path} is a file, not a folder; use read_file`);
   const entries = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name));
-  const names = entries.slice(0, 500).map((e) => (e.isSymbolicLink() ? `${e.name} (link)` : e.isDirectory() ? `${e.name}/` : e.name));
+  const names = entries.slice(0, 500).map((e) => {
+    const name = e.isSymbolicLink() ? `${e.name} (link)` : e.isDirectory() ? `${e.name}/` : e.name;
+    return readable(join(dir, e.name), book) ? name : `${name} (off limits)`; // so the model doesn't try
+  });
   if (entries.length > 500) names.push(`… and ${entries.length - 500} more`);
   return names.join("\n") || "(empty folder)";
 }
 
-function readFile(root: string, path: string, offset = 1, limit = 400): string {
+function readFile(root: string, path: string, book: Rulebook, offset = 1, limit = 400): string {
   const file = inside(root, path);
+  checkRead(root, path, file, book);
   const info = statSync(file);
   if (info.isDirectory()) throw new ToolError(`${path} is a folder; use list_files`);
   if (info.size > 2_000_000) throw new ToolError(`${path} is ${(info.size / 1e6).toFixed(1)} MB, too big to read; use search`);
@@ -92,10 +108,11 @@ function readFile(root: string, path: string, offset = 1, limit = 400): string {
 // Plain text, not a regular expression, on purpose: JavaScript's regex engine can take hours on some
 // patterns ("catastrophic backtracking"), and the pattern would come from the model.
 const SKIP = new Set([".git", "node_modules"]);
-function search(root: string, text: string, path: string): string {
+function search(root: string, text: string, path: string, book: Rulebook): string {
   if (!text) throw new ToolError("text is empty");
   const base = realpathSync.native(root);
   const start = inside(root, path);
+  checkRead(root, path, start, book);
   const needle = text.toLowerCase();
   const hits: string[] = [];
   const searchFile = (file: string) => {
@@ -123,6 +140,7 @@ function search(root: string, text: string, path: string): string {
       // Links are never followed while walking: one could lead out of the project.
       if (entry.isSymbolicLink() || SKIP.has(entry.name)) continue;
       const full = join(dir, entry.name);
+      if (!readable(full, book)) continue; // off limits by the rulebook: skipped without a word
       if (entry.isDirectory()) visit(full);
       else if (entry.isFile()) searchFile(full);
     }

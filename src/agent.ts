@@ -1,6 +1,7 @@
 // The agent loop, the heart of Claude Code: send the conversation; if the model asks for tools, run
 // them and send back what they returned; repeat until the model answers in words.
 import { TOOLS, describeCall, runTool } from "./tools.ts";
+import { loadRulebook } from "./rules.ts";
 import { dim, streamReply, terminal, type Message, type Output, type Reply } from "./reply.ts";
 
 // A model that keeps calling tools without ever answering is stuck. The AI Lab's benchmark saw the
@@ -12,6 +13,7 @@ export function startConversation(root: string, extra?: string): Message[] {
   const prompt = [
     `You are Squid, an assistant running on this computer, working in the folder ${root}.`,
     "You can look at its files with the tools list_files, read_file and search. Paths are relative to that folder; nothing outside it can be opened. You cannot change files or run commands.",
+    "Some files are off limits (secrets, holdout data, and anything the user's rules deny). If a tool says so, don't try to get around it.",
     "When a question is about the project, look before you answer, and say which files you read. Be concise.",
   ].join("\n");
   return [{ role: "system", content: extra ? `${prompt}\n\n${extra}` : prompt }];
@@ -27,6 +29,7 @@ export async function agentTurn(
   signal?: AbortSignal,
   out: Output = terminal,
 ): Promise<{ model: string; reply: Reply }> {
+  const book = loadRulebook(root); // the rules in force for this turn (step 09)
   for (let round = 1; round <= MAX_ROUNDS; round++) {
     const reply = await streamReply(base, { model, messages, tools: TOOLS }, signal, out);
     model = reply.model;
@@ -43,7 +46,7 @@ export async function agentTurn(
     if (!reply.toolCalls.length) return { model, reply }; // it answered in words: the turn is over
 
     for (const call of reply.toolCalls) {
-      const result = runTool(root, call);
+      const result = runTool(root, call, book);
       out.note(`● ${describeCall(call)}\n${dim(`  ⎿ ${summarise(result)}`)}\n`);
       // A tool result is a message of its own, linked to the call by its id.
       messages.push({ role: "tool", tool_call_id: call.id, content: result });
