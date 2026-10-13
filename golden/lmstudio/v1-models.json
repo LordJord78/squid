@@ -1,27 +1,7 @@
 {
   "data": [
     {
-      "id": "qwen3.6-35b-a3b-text",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
-      "id": "gpt-oss-20b",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
-      "id": "devstral-small-2-24b-instruct-2512-text",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
       "id": "qwen3.8-27b-text",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
-      "id": "qwen/qwen3-coder-30b",
       "object": "model",
       "owned_by": "organization_owner"
     },
@@ -31,17 +11,7 @@
       "owned_by": "organization_owner"
     },
     {
-      "id": "qwen/qwen3-vl-8b",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
       "id": "text-embedding-nomic-embed-text-v1.5",
-      "object": "model",
-      "owned_by": "organization_owner"
-    },
-    {
-      "id": "deepseek-r1-distill-qwen-14b",
       "object": "model",
       "owned_by": "organization_owner"
     }

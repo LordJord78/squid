@@ -1,7 +1,7 @@
 {
-  "id": "chatcmpl-3x3e94o9unk7r9e0rkh1z",
+  "id": "chatcmpl-pe3lnjylp3s69djtb5rn5r",
   "object": "chat.completion",
-  "created": 1791853343,
+  "created": 1791869267,
   "model": "qwen/qwen3.5-9b",
   "choices": [
     {
@@ -25,9 +25,9 @@
     }
   },
   "stats": {
-    "tokens_per_second": 115.93683550407492,
-    "time_to_first_token": 0.040341,
-    "generation_time": 1.1788919999999998,
+    "tokens_per_second": 116.60190255437668,
+    "time_to_first_token": 0.041638,
+    "generation_time": 1.173695,
     "stop_reason": "eosFound"
   },
   "model_info": {

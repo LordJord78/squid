@@ -1,48 +1,6 @@
 {
   "data": [
     {
-      "id": "qwen3.6-35b-a3b-text",
-      "object": "model",
-      "type": "llm",
-      "publisher": "unsloth",
-      "arch": "qwen35moe",
-      "compatibility_type": "gguf",
-      "quantization": "IQ3_XXS",
-      "state": "not-loaded",
-      "max_context_length": 262144,
-      "capabilities": [
-        "tool_use"
-      ]
-    },
-    {
-      "id": "gpt-oss-20b",
-      "object": "model",
-      "type": "llm",
-      "publisher": "lmstudio-community",
-      "arch": "gpt-oss",
-      "compatibility_type": "gguf",
-      "quantization": "MXFP4",
-      "state": "not-loaded",
-      "max_context_length": 131072,
-      "capabilities": [
-        "tool_use"
-      ]
-    },
-    {
-      "id": "devstral-small-2-24b-instruct-2512-text",
-      "object": "model",
-      "type": "llm",
-      "publisher": "unsloth",
-      "arch": "mistral3",
-      "compatibility_type": "gguf",
-      "quantization": "IQ4_XS",
-      "state": "not-loaded",
-      "max_context_length": 393216,
-      "capabilities": [
-        "tool_use"
-      ]
-    },
-    {
       "id": "qwen3.8-27b-text",
       "object": "model",
       "type": "llm",
@@ -50,20 +8,6 @@
       "arch": "qwen35",
       "compatibility_type": "gguf",
       "quantization": "IQ4_XS",
-      "state": "not-loaded",
-      "max_context_length": 262144,
-      "capabilities": [
-        "tool_use"
-      ]
-    },
-    {
-      "id": "qwen/qwen3-coder-30b",
-      "object": "model",
-      "type": "llm",
-      "publisher": "qwen",
-      "arch": "qwen3moe",
-      "compatibility_type": "gguf",
-      "quantization": "Q4_K_M",
       "state": "not-loaded",
       "max_context_length": 262144,
       "capabilities": [
@@ -85,20 +29,6 @@
       ]
     },
     {
-      "id": "qwen/qwen3-vl-8b",
-      "object": "model",
-      "type": "vlm",
-      "publisher": "qwen",
-      "arch": "qwen3vl",
-      "compatibility_type": "gguf",
-      "quantization": "Q4_K_M",
-      "state": "not-loaded",
-      "max_context_length": 262144,
-      "capabilities": [
-        "tool_use"
-      ]
-    },
-    {
       "id": "text-embedding-nomic-embed-text-v1.5",
       "object": "model",
       "type": "embeddings",
@@ -108,17 +38,6 @@
       "quantization": "Q4_K_M",
       "state": "not-loaded",
       "max_context_length": 2048
-    },
-    {
-      "id": "deepseek-r1-distill-qwen-14b",
-      "object": "model",
-      "type": "llm",
-      "publisher": "lmstudio-community",
-      "arch": "qwen2",
-      "compatibility_type": "gguf",
-      "quantization": "Q4_K_M",
-      "state": "not-loaded",
-      "max_context_length": 131072
     }
   ],
   "object": "list"

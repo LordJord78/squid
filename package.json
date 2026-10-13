@@ -13,7 +13,8 @@
   "scripts": {
     "test": "node --test \"test/**/*.test.ts\"",
     "check": "tsc --noEmit",
-    "capture:lmstudio": "pwsh -NoProfile -File golden/capture-lmstudio.ps1"
+    "capture:lmstudio": "pwsh -NoProfile -File golden/capture-lmstudio.ps1",
+    "engine:get": "pwsh -NoProfile -File scripts/get-engine.ps1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
