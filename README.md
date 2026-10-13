@@ -32,6 +32,8 @@ npm run engine:get        # once: download llama.cpp (pinned, checksum-verified)
 npm link                  # once: puts `squid` on your PATH (undo: npm unlink -g squid)
 
 squid                     # start the server in the background and load your default model
+squid chat                # the agent in the terminal, working on this folder
+squid web                 # the same in your browser (a private link for this folder; Ctrl+C stops it)
 squid ask "…"             # one question, streamed
 squid ps                  # what's loaded (models loaded on demand unload after 60 min unused)
 squid unload --all        # free the GPU

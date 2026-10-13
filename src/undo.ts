@@ -3,6 +3,7 @@
 // one. Run it again to go further back. Only changes made by edit_file and write_file are tracked; a
 // command's changes (npm run format, git checkout) can't be undone here (Claude Code has the same limit).
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { renderDiff } from "./diff.ts";
 
 // One file in one checkpoint: how it was before the agent's first change in that turn (null = it didn't
 // exist), and how the agent last left it. The second lets undo notice if someone changed it since.
@@ -49,6 +50,18 @@ export function planUndo(checkpoints: Checkpoint[]): UndoPlan | undefined {
     (now === snapshot.after ? restore : skipped).push(snapshot);
   }
   return { checkpoint, restore, skipped };
+}
+
+// The plan in words, for you to approve: each file, what will happen to it, and a short diff.
+// `name` shortens paths (relative to the folder); `color` is for a terminal, not the browser page.
+export function describeUndo(plan: UndoPlan, name: (file: string) => string, color: boolean): string {
+  const lines = [`Undo "${plan.checkpoint.label}":`];
+  for (const s of plan.restore) {
+    lines.push(s.before === null ? `  ${name(s.file)}: delete it (the agent created it)` : `  ${name(s.file)}: put back as it was`);
+    if (s.before !== null) lines.push(renderDiff(s.after ?? "", s.before, { context: 1, color }).split("\n").slice(0, 12).map((l) => `    ${l}`).join("\n"));
+  }
+  for (const s of plan.skipped) lines.push(`  ${name(s.file)}: changed since the agent wrote it, so it's left alone`);
+  return lines.join("\n");
 }
 
 // After an undo the model's picture of those files is out of date, so it's told, in front of your next

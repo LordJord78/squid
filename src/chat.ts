@@ -3,12 +3,11 @@
 // conversation so far; that list of messages *is* the chat's memory.
 import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
-import { dim, type Message } from "./reply.ts";
+import { contextLimit, dim, type Message } from "./reply.ts";
 import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
 import { relative } from "node:path";
 import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
-import { applyUndo, planUndo, undoNote } from "./undo.ts";
-import { renderDiff } from "./diff.ts";
+import { applyUndo, describeUndo, planUndo, undoNote } from "./undo.ts";
 import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { readConfig } from "./config.ts";
@@ -125,7 +124,8 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
     } else if (input.kind === "say") {
       forgetThinking(history);
       const before = history.length;
-      history.push({ role: "user", content: pendingNote ? `${pendingNote}\n\n${input.text}` : input.text });
+      const note = pendingNote;
+      history.push({ role: "user", content: note ? `${note}\n\n${input.text}` : input.text });
       pendingNote = undefined;
       answering = new AbortController();
       try {
@@ -137,6 +137,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
         if (limit) process.stderr.write(dim(`${meter(used, limit)}${used / limit > 0.8 ? "  · nearly full: /clear starts fresh" : ""}\n`));
       } catch (err) {
         history.length = before; // the question wasn't answered: drop it, and any tool calls it started
+        pendingNote = note; // ...but the model still needs to hear about an undo, with the next message
         process.stderr.write(answering.signal.aborted ? dim("\n(stopped; that message was left out of the conversation)\n") : `${(err as Error).message}\n`);
       } finally {
         answering = undefined;
@@ -156,13 +157,7 @@ async function undoLast(session: Session, root: string, question?: (prompt: stri
     return undefined;
   }
   const name = (file: string) => relative(root, file) || file;
-  const lines = [`Undo "${plan.checkpoint.label}":`];
-  for (const s of plan.restore) {
-    lines.push(s.before === null ? `  ${name(s.file)}: delete it (the agent created it)` : `  ${name(s.file)}: put back as it was`);
-    if (s.before !== null) lines.push(renderDiff(s.after ?? "", s.before, { context: 1, color: process.stderr.isTTY }).split("\n").slice(0, 12).map((l) => `    ${l}`).join("\n"));
-  }
-  for (const s of plan.skipped) lines.push(`  ${name(s.file)}: changed since the agent wrote it, so it's left alone`);
-  process.stderr.write(`${lines.join("\n")}\n`);
+  process.stderr.write(`${describeUndo(plan, name, process.stderr.isTTY)}\n`);
   if (!plan.restore.length) return undefined;
   if (question && !/^(y|yes)$/i.test(((await question("Undo these? y = yes · n = no › ")) ?? "").trim())) {
     process.stderr.write(dim("Nothing undone.\n"));
@@ -171,12 +166,6 @@ async function undoLast(session: Session, root: string, question?: (prompt: stri
   applyUndo(session.checkpoints, plan, writeAtomically);
   process.stderr.write(dim(`Undid ${plan.restore.length} file${plan.restore.length === 1 ? "" : "s"}.\n`));
   return undoNote(plan.checkpoint.label, plan.restore.map((s) => name(s.file)));
-}
-
-// The model's context size, as the server reports it for a loaded model (/api/v0/models).
-async function contextLimit(base: string, model: string): Promise<number | undefined> {
-  const list = await (await fetch(`${base}/api/v0/models`)).json();
-  return list.data.find((m: any) => m.id === model)?.loaded_context_length;
 }
 
 // An exact model name, or the one whose name contains what was typed (as `squid load` accepts).

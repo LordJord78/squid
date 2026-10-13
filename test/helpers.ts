@@ -1,4 +1,6 @@
-// Builds small GGUF files by hand for tests: just a header, no weights.
+// Builds small GGUF files by hand for tests: just a header, no weights. And a scripted stand-in model.
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -30,6 +32,38 @@ export function ggufBytes(meta: Record<string, MetaValue>, padTo = 0): Buffer {
 
 export function tempDir(): string {
   return mkdtempSync(join(tmpdir(), "squid-"));
+}
+
+// A stand-in for Squid's server that follows a script: each chat request gets the next step, either a
+// tool call or an answer, streamed in LM Studio's format with the arguments cut into 5-character pieces.
+// It also answers the model list, as a loaded model "fake" with an 8,192-token context.
+export type Step = { tool: [string, object] } | { say: string };
+export async function scriptedServer(script: Step[]) {
+  const requests: any[] = [];
+  const server = createServer(async (req, res) => {
+    if (req.url === "/api/v0/models") return res.end(JSON.stringify({ data: [{ id: "fake", loaded_context_length: 8192 }] }));
+    let body = "";
+    for await (const chunk of req) body += chunk;
+    requests.push(JSON.parse(body));
+    const step = script[Math.min(requests.length - 1, script.length - 1)];
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const send = (delta: object, finish: string | null = null) =>
+      res.write(`data: ${JSON.stringify({ model: "fake", choices: [{ index: 0, delta, logprobs: null, finish_reason: finish }] })}\n\n`);
+    send({ reasoning_content: `plan ${requests.length}` });
+    if ("tool" in step) {
+      const [name, args] = step.tool;
+      send({ tool_calls: [{ index: 0, id: `call${requests.length}`, type: "function", function: { name, arguments: "" } }] });
+      const text = JSON.stringify(args);
+      for (let i = 0; i < text.length; i += 5) send({ tool_calls: [{ index: 0, type: "function", function: { arguments: text.slice(i, i + 5) } }] });
+      send({}, "tool_calls");
+    } else {
+      send({ content: step.say });
+      send({}, "stop");
+    }
+    res.end("data: [DONE]\n\n");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return { base: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, requests, close: () => server.close() };
 }
 
 export function writeGguf(path: string, meta: Record<string, MetaValue>, padTo = 0): string {

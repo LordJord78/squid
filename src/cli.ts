@@ -10,6 +10,7 @@ import { readConfig } from "./config.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { ask } from "./ask.ts";
 import { chat } from "./chat.ts";
+import { web } from "./web.ts";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -17,7 +18,9 @@ const USAGE = `usage:
   squid                     start your local AI (server + default model) and chat with it
   squid chat [--model NAME] [--system TEXT] [--mode manual|auto|plan]
                             a conversation in the terminal (/help inside; Shift+Tab changes mode)
-  squid ls                  list your models
+  squid web [--model NAME] [--mode manual|auto|plan] [--port N] [--no-open]
+                            the same, in your browser, for the folder you're in (Ctrl+C stops it)
+  squid ls                 list your models
   squid info <model.gguf>   what's inside one model file
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
                             start the engine with a model ("27b" is enough if only one name contains it)
@@ -141,6 +144,15 @@ switch (command) {
       fail((err as Error).message);
     }
     break;
+  }
+  case "web": {
+    const { values } = parseArgs({ args, options: { model: { type: "string", short: "m" }, mode: { type: "string" }, port: { type: "string" }, "no-open": { type: "boolean" } } });
+    try {
+      await web({ model: values.model, mode: modeOption(values.mode), port: whole(values.port, "--port"), open: !values["no-open"] });
+    } catch (err) {
+      fail((err as NodeJS.ErrnoException).code === "EADDRINUSE" ? `port ${values.port} is already in use` : (err as Error).message);
+    }
+    break; // the page's server keeps this program running until Ctrl+C
   }
   case "help":
   case "--help":

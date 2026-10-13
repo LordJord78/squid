@@ -91,5 +91,12 @@ export async function streamReply(
   return reply;
 }
 
+// The model's context size, as the server reports it for a loaded model (/api/v0/models). The chat and
+// the browser page use it for the "how full is the model's memory" meter.
+export async function contextLimit(base: string, model: string): Promise<number | undefined> {
+  const list = await (await fetch(`${base}/api/v0/models`)).json();
+  return list.data.find((m: any) => m.id === model)?.loaded_context_length;
+}
+
 // Errors come as {"error": "text"} or {"error": {"message": "text"}}, as LM Studio sends them.
 export const errorText = (body: any) => (typeof body.error === "string" ? body.error : body.error?.message ?? JSON.stringify(body));
