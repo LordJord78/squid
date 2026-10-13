@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createServer, type Server } from "node:http";
+import { execFileSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { existsSync, readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { startServer, type Sources } from "../src/server.ts";
@@ -19,21 +21,29 @@ function shape(value: unknown): unknown {
   return typeof value;
 }
 
-// A stand-in for llama-server: answers with the recorded raw reply, and only with the right key.
+// A stand-in for llama-server: answers with the recorded raw replies, and only with the right key.
+// Streams are sent in 100-byte pieces, so events arrive cut at random places, as over a network.
 async function fakeEngine(): Promise<{ server: Server; engine: Engine }> {
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     if (req.headers.authorization !== "Bearer test-key") return res.writeHead(401).end();
-    res.setHeader("Content-Type", "application/json");
+    let body = "";
+    for await (const chunk of req) body += chunk;
     if (req.url === "/tokenize") return res.end(JSON.stringify({ tokens: new Array(129).fill(0) }));
-    res.end(JSON.stringify(golden("llamacpp/chat-nonstream.json")));
+    if (!JSON.parse(body).stream) return res.end(JSON.stringify(golden("llamacpp/chat-nonstream.json")));
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const bytes = readFileSync(new URL("../golden/llamacpp/chat-stream-usage.sse", import.meta.url));
+    for (let i = 0; i < bytes.length; i += 100) res.write(bytes.subarray(i, i + 100));
+    res.end();
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  const engine: Engine = {
-    identifier: "qwen/qwen3.5-9b", key: "qwen/qwen3.5-9b", pid: 0, port: portOf(server), apiKey: "test-key",
-    contextLength: 8192, parallel: 4, sizeBytes: 1, architecture: "qwen35", quantization: "Q4_K_M", log: "",
-  };
-  return { server, engine };
+  return { server, engine: engineRecord(portOf(server)) };
 }
+
+// The record `squid load` would have written for an engine on this port.
+const engineRecord = (port: number): Engine => ({
+  identifier: "qwen/qwen3.5-9b", key: "qwen/qwen3.5-9b", pid: 0, port, apiKey: "test-key",
+  contextLength: 8192, parallel: 4, sizeBytes: 1, architecture: "qwen35", quantization: "Q4_K_M", log: "",
+});
 
 async function withServer(sources: Sources, run: (base: string) => Promise<void>) {
   const server = await startServer(0, sources);
@@ -98,6 +108,77 @@ test("a chat reply is rebuilt in LM Studio's shape", async () => {
   }
 });
 
+// Splits a recorded stream into its events: the JSON chunks, with "[DONE]" checked and removed.
+function sseEvents(text: string) {
+  const events = text.split("\n\n").filter(Boolean).map((event) => event.replace(/^data: /, ""));
+  assert.equal(events.at(-1), "[DONE]");
+  return events.slice(0, -1).map((data) => JSON.parse(data));
+}
+// What each chunk carries: "thinking", "answer", "end" (finish_reason) or "usage".
+const kinds = (chunks: any[]) =>
+  chunks.map((c) => (c.usage ? "usage" : c.choices[0].finish_reason ? "end" : c.choices[0].delta.content ? "answer" : "thinking"));
+const squeeze = (list: string[]) => list.filter((kind, i) => kind !== list[i - 1]); // thinking,thinking,answer → thinking,answer
+
+test("a streamed reply is passed on event by event, in LM Studio's shape", async () => {
+  const { server, engine } = await fakeEngine();
+  try {
+    await withServer({ shelf: () => [], engines: () => [engine] }, async (base) => {
+      const ask = { model: "qwen/qwen3.5-9b", messages: [{ role: "user", content: "Reply with exactly one word: pong" }], stream: true, stream_options: { include_usage: true } };
+      const res = await post(`${base}/v1/chat/completions`, JSON.stringify(ask));
+      assert.equal(res.headers.get("content-type"), "text/event-stream");
+      const text = await res.text();
+      assert.match(text, /^(data: [^\n]+\n\n)+$/, "every event is one data: line and a blank line");
+
+      const ours = sseEvents(text);
+      const lmstudio = sseEvents(readFileSync(new URL("../golden/lmstudio/chat-stream-usage.sse", import.meta.url), "utf8"));
+      assert.deepEqual(squeeze(kinds(ours)), ["thinking", "answer", "end", "usage"]);
+      assert.deepEqual(squeeze(kinds(ours)), squeeze(kinds(lmstudio)), "same order as LM Studio");
+      // Same fields as LM Studio's chunk of the same kind; the first one also carries the role.
+      for (const kind of ["thinking", "answer", "end", "usage"]) {
+        assert.deepEqual(shape(ours.find((c, i) => kinds(ours)[i] === kind)), shape(lmstudio.find((c, i) => kinds(lmstudio)[i] === kind)), kind);
+      }
+      assert.deepEqual(Object.keys(ours[0].choices[0].delta), ["role", "reasoning_content"], "role rides on the first real event");
+      assert.equal(new Set(ours.map((c) => c.id)).size, 1, "one id for the whole reply");
+      assert.equal(ours.map((c) => c.choices[0]?.delta.content ?? "").join(""), "pong");
+      assert.equal(ours.at(-1).usage.completion_tokens_details.reasoning_tokens, 129);
+    });
+  } finally {
+    server.close();
+  }
+});
+
+test("hanging up mid-answer stops the engine", async () => {
+  let engineHungUp = false;
+  // An engine that never finishes: one event every 20 ms until its caller goes away.
+  const slow = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    const timer = setInterval(() => res.write('data: {"created":1,"choices":[{"index":0,"delta":{"content":"la "}}]}\n\n'), 20);
+    req.on("close", () => {
+      clearInterval(timer);
+      engineHungUp = true;
+    });
+  });
+  await new Promise<void>((resolve) => slow.listen(0, "127.0.0.1", resolve));
+  const engine = engineRecord(portOf(slow));
+  try {
+    await withServer({ shelf: () => [], engines: () => [engine] }, async (base) => {
+      const stop = new AbortController();
+      const res = await fetch(`${base}/v1/chat/completions`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, signal: stop.signal,
+        body: JSON.stringify({ model: engine.identifier, messages: [], stream: true }),
+      });
+      const reader = res.body!.getReader();
+      await reader.read(); // the first words arrive...
+      stop.abort(); // ...and the app hangs up
+      for (let waited = 0; !engineHungUp && waited < 2000; waited += 20) await new Promise((r) => setTimeout(r, 20));
+      assert.ok(engineHungUp, "the front door hung up on the engine too");
+    });
+  } finally {
+    slow.closeAllConnections();
+    slow.close();
+  }
+});
+
 test("a model that isn't loaded is refused, not swapped for another", async () => {
   const { server, engine } = await fakeEngine();
   try {
@@ -136,5 +217,16 @@ test("with the 9B loaded: model list and a real reply match LM Studio's", { skip
     assert.equal(reply.choices[0].message.content, "pong");
     // completion = thinking + "<think>", "</think>" and blank-line tokens + the answer, as in LM Studio's 133 = 129 + 4
     assert.equal(reply.usage.completion_tokens, reply.usage.completion_tokens_details.reasoning_tokens + 4);
+
+    // Streamed, through the same front door: same order of events as LM Studio's, same answer.
+    const streamed = await (await post(`${base}/v1/chat/completions`, JSON.stringify({ ...JSON.parse(ask), stream: true }))).text();
+    const lmstudio = readFileSync(new URL("../golden/lmstudio/chat-stream.sse", import.meta.url), "utf8");
+    assert.deepEqual(squeeze(kinds(sseEvents(streamed))), squeeze(kinds(sseEvents(lmstudio))));
+    assert.equal(sseEvents(streamed).map((c) => c.choices[0].delta.content ?? "").join(""), "pong");
   });
+
+  // `squid ask` end to end, as a separate program: only the answer reaches stdout.
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const stdout = execFileSync(process.execPath, [cli, "ask", "Reply with exactly one word: pong", "--model", model.key], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+  assert.match(stdout.trim(), /^pong$/i);
 });

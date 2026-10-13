@@ -10,9 +10,14 @@ $wasLoaded = (node "$repo\src\cli.ts" ps | Out-String) -match "qwen/qwen3.5-9b"
 if (-not $wasLoaded) { node "$repo\src\cli.ts" load qwen/qwen3.5-9b --context 8192 | Out-Null }
 
 $engine = Get-Content "$env:USERPROFILE\.squid\loaded\qwen%2Fqwen3.5-9b.json" | ConvertFrom-Json
-$body = @{ model = "qwen/qwen3.5-9b"; messages = @(@{ role = "user"; content = "Reply with exactly one word: pong" }); temperature = 0; max_tokens = 2000 } | ConvertTo-Json -Depth 5 -Compress
-$reply = $body | curl.exe -s -X POST "http://127.0.0.1:$($engine.port)/v1/chat/completions" -H "Content-Type: application/json" -H "Authorization: Bearer $($engine.apiKey)" --data-binary "@-"
-Set-Content (Join-Path $out "chat-nonstream.json") $reply -Encoding utf8NoBOM
+$ask = @{ model = "qwen/qwen3.5-9b"; messages = @(@{ role = "user"; content = "Reply with exactly one word: pong" }); temperature = 0; max_tokens = 2000 }
+# curl.exe writes each reply straight to its file, byte for byte.
+function Post($body, $file) {
+    $body | ConvertTo-Json -Depth 5 -Compress | curl.exe -s -N -X POST "http://127.0.0.1:$($engine.port)/v1/chat/completions" `
+        -H "Content-Type: application/json" -H "Authorization: Bearer $($engine.apiKey)" --data-binary "@-" -o (Join-Path $out $file)
+}
+Post $ask "chat-nonstream.json"
+Post ($ask + @{ stream = $true; stream_options = @{ include_usage = $true } }) "chat-stream-usage.sse"
 
 if (-not $wasLoaded) { node "$repo\src\cli.ts" unload qwen/qwen3.5-9b | Out-Null }
 Get-ChildItem $out | Select-Object Name, Length

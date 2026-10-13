@@ -15,10 +15,11 @@ function Save($name, $text) { Set-Content -Path (Join-Path $out $name) -Value $t
 function Get-Json($path) {
     try { (Invoke-WebRequest "$base$path" -TimeoutSec 30).Content } catch { "HTTP error: $($_.Exception.Message)" }
 }
-function Post($path, $body, [switch]$Raw) {
+function Post($path, $body, $file) {
     $json = $body | ConvertTo-Json -Depth 10 -Compress
-    # curl.exe keeps the raw SSE stream byte-for-byte, which Invoke-WebRequest would not
-    $json | curl.exe -s -N -X POST "$base$path" -H "Content-Type: application/json" --data-binary "@-"
+    # curl.exe writes the reply straight to the file, byte for byte. Capturing it in PowerShell first
+    # would re-split the stream's lines and turn every "\n" into "\r\n".
+    $json | curl.exe -s -N -X POST "$base$path" -H "Content-Type: application/json" --data-binary "@-" -o (Join-Path $out $file)
 }
 
 $wasRunning = (& $lms server status 2>&1 | Out-String) -notmatch "not running"
@@ -35,16 +36,17 @@ Save "lms-ps.txt" (& $lms ps 2>&1 | Out-String)
 Save "api-v0-models-loaded.json" (Get-Json "/api/v0/models")
 
 $ask = @{ role = "user"; content = "Reply with exactly one word: pong" }
-Save "chat-nonstream.json" (Post "/v1/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400 })
-Save "chat-stream.sse"     (Post "/v1/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400; stream = $true })
-Save "api-v0-chat.json"    (Post "/api/v0/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400 })
+Post "/v1/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400 } "chat-nonstream.json"
+Post "/v1/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400; stream = $true } "chat-stream.sse"
+Post "/v1/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400; stream = $true; stream_options = @{ include_usage = $true } } "chat-stream-usage.sse"
+Post "/api/v0/chat/completions" @{ model = $Model; messages = @($ask); temperature = 0; max_tokens = 400 } "api-v0-chat.json"
 
 $tool = @{ type = "function"; function = @{
     name = "read_file"; description = "Read a text file from the current project"
     parameters = @{ type = "object"; properties = @{ path = @{ type = "string" } }; required = @("path") } } }
 $toolAsk = @{ role = "user"; content = "Use the read_file tool to open README.md." }
-Save "chat-tools.json"       (Post "/v1/chat/completions" @{ model = $Model; messages = @($toolAsk); tools = @($tool); temperature = 0; max_tokens = 400 })
-Save "chat-tools-stream.sse" (Post "/v1/chat/completions" @{ model = $Model; messages = @($toolAsk); tools = @($tool); temperature = 0; max_tokens = 400; stream = $true })
+Post "/v1/chat/completions" @{ model = $Model; messages = @($toolAsk); tools = @($tool); temperature = 0; max_tokens = 400 } "chat-tools.json"
+Post "/v1/chat/completions" @{ model = $Model; messages = @($toolAsk); tools = @($tool); temperature = 0; max_tokens = 400; stream = $true } "chat-tools-stream.sse"
 
 Save "v1-models-bad-route.json" (Get-Json "/v1/does-not-exist")
 

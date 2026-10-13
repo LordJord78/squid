@@ -5,6 +5,7 @@ import { readGgufHeader, describeModel } from "./gguf.ts";
 import { listModels, type ShelfModel } from "./models.ts";
 import { load, running, status, unload } from "./engine.ts";
 import { startServer, DEFAULT_PORT } from "./server.ts";
+import { ask } from "./ask.ts";
 
 const [command, ...args] = process.argv.slice(2);
 
@@ -15,7 +16,9 @@ const USAGE = `usage:
                             start the engine with a model ("27b" is enough if only one name contains it)
   squid ps                  models that are loaded now
   squid unload <name>|--all stop the engine and free the GPU
-  squid serve [--port N]    the local API server (OpenAI-style), on 127.0.0.1:1235`;
+  squid serve [--port N]    the local API server (OpenAI-style), on 127.0.0.1:1235
+  squid ask "<question>" [--model NAME] [--system TEXT] [--stats]
+                            one question, answered as it's written`;
 
 // LM Studio shows sizes in decimal units (1 GB = 1,000,000,000 bytes), MB below 1 GB.
 const size = (bytes: number) => (bytes < 1e9 ? `${(bytes / 1e6).toFixed(2)} MB` : `${(bytes / 1e9).toFixed(2)} GB`);
@@ -142,6 +145,20 @@ switch (command) {
     for (const name of names) {
       if (await unload(name)) console.log(`Unloaded ${name}.`);
       else fail(`${name} isn't loaded (see \`squid ps\`)`);
+    }
+    break;
+  }
+  case "ask": {
+    const { values, positionals } = parseArgs({
+      args,
+      allowPositionals: true,
+      options: { model: { type: "string", short: "m" }, system: { type: "string", short: "s" }, stats: { type: "boolean" } },
+    });
+    if (!positionals.length) fail('usage: squid ask "<question>" [--model NAME] [--system TEXT] [--stats]');
+    try {
+      await ask(positionals.join(" "), values);
+    } catch (err) {
+      fail((err as Error).message);
     }
     break;
   }

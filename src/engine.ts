@@ -139,12 +139,15 @@ export async function load(model: ShelfModel, options: LoadOptions = {}, onWait?
 }
 
 // Every engine whose record points at a live llama-server. Records left behind by a crash are removed.
-export function running(): Engine[] {
+// `quick` only asks "is that process ID alive?" and skips asking Windows for the program's name
+// (~100 ms). The front door uses it on every request, where the worst case is a "not answering" error.
+// `ps` and `unload`, which can end processes, always check the name.
+export function running(quick = false): Engine[] {
   if (!existsSync(LOADED)) return [];
   const engines: Engine[] = [];
   for (const name of readdirSync(LOADED)) {
     const engine: Engine = JSON.parse(readFileSync(join(LOADED, name), "utf8"));
-    if (isEngine(engine.pid)) engines.push(engine);
+    if (quick ? isAlive(engine.pid) : isEngine(engine.pid)) engines.push(engine);
     else rmSync(join(LOADED, name));
   }
   return engines.sort((a, b) => (a.identifier < b.identifier ? -1 : 1));
@@ -176,6 +179,16 @@ async function health(engine: Engine): Promise<"ok" | "loading" | "down"> {
     return res.ok ? "ok" : "loading";
   } catch {
     return "down"; // not listening yet, or gone
+  }
+}
+
+// Signal 0 delivers nothing; it only fails if no process has this ID.
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
   }
 }
 
