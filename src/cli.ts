@@ -29,7 +29,7 @@ const USAGE = `usage:
   squid load <model> [--context N] [--parallel N] [--identifier NAME]
                             start the engine with a model ("27b" is enough if only one name contains it)
   squid ps                  models that are loaded now
-  squid unload <name>|--all stop the engine and free the GPU
+  squid unload <name>|--all stop the engine and free the GPU ("27b" is enough here too)
   squid server start|stop|status
                             the API server (OpenAI-style) in the background, on 127.0.0.1:1235
   squid serve [--port N]    the same server in this window (Ctrl+C stops it)
@@ -266,8 +266,13 @@ switch (command) {
     break;
   }
   case "unload": {
-    const names = args[0] === "--all" ? running().map((e) => e.identifier) : args.slice(0, 1);
-    if (!names.length) fail(args[0] === "--all" ? "nothing is loaded" : "usage: squid unload <name> | --all");
+    const loaded = running().map((e) => e.identifier);
+    if (!args[0]) fail("usage: squid unload <name> | --all");
+    // Like load: the exact name, or the one loaded model whose name contains what you typed ("27b").
+    const matches = loaded.includes(args[0]) ? [args[0]] : loaded.filter((id) => id.includes(args[0].toLowerCase()));
+    if (args[0] !== "--all" && matches.length > 1) fail(`"${args[0]}" matches ${matches.join(", ")}`);
+    const names = args[0] === "--all" ? loaded : matches.length ? matches : [args[0]];
+    if (!names.length) fail("nothing is loaded");
     for (const name of names) {
       if (await unload(name)) console.log(`Unloaded ${name}.`);
       else fail(`${name} isn't loaded (see \`squid ps\`)`);
