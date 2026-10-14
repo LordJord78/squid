@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { relative } from "node:path";
 import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
+import { compact, isSummary } from "./compact.ts";
 import { answerFrom, planChoiceFrom } from "./approve.ts";
 import { readConfig } from "./config.ts";
 import { ensureServer } from "./daemon.ts";
@@ -82,7 +83,7 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
     root,
     async (request) => answerFrom(await askPage((id) => ({ type: "ask", id, ...request, preview: plain(request.preview) })), Boolean(request.always)),
     (text) => turn?.send({ type: "note", text: plain(text) }),
-    { mode: options.mode, choosePlan: async (plan) => planChoiceFrom(await askPage((id) => ({ type: "plan", id, plan }))) },
+    { mode: options.mode, compactAt: readConfig().compactAt, choosePlan: async (plan) => planChoiceFrom(await askPage((id) => ({ type: "plan", id, plan }))) },
   );
   const name = (file: string) => relative(root, file) || file;
 
@@ -105,7 +106,15 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
       thinking: (t) => send({ type: "thinking", text: t }),
       note: (t) => send({ type: "note", text: plain(t) }),
     };
+    const done = async () => send({ type: "done", model: model ?? "", used, limit: model ? await contextLimit(base, model).catch(() => undefined) : undefined, mode: session.mode });
     try {
+      // /compact, as in the chat (step 19). Typed into the page like a message, but not sent to the model.
+      const asked = /^\/compact(\s|$)/i.exec(text);
+      if (asked) {
+        if (history.length < 3) send({ type: "note", text: "Nothing to compact yet.\n" });
+        else used = (await compact(base, model, history, session, out, { force: true, focus: text.slice(asked[0].length).trim() || undefined, signal: stop.signal })).after;
+        return await done();
+      }
       // The same turn as the chat's (agent.ts): if it breaks off, the rounds that finished are kept.
       const result = await takeTurn(base, model, history, text, pendingNote, session, stop.signal, out);
       pendingNote = result.note;
@@ -114,8 +123,10 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
         model = result.model!;
         used = result.reply?.usage?.total_tokens ?? used;
         if (result.paused) send({ type: "note", text: `(paused after ${MAX_ROUNDS} rounds of tool calls without an answer; say "continue" to carry on)\n` });
-        send({ type: "done", model, used, limit: await contextLimit(base, model).catch(() => undefined), mode: session.mode });
+        await done();
       }
+    } catch (err) {
+      send({ type: "error", message: stop.signal.aborted ? "Stopped: trimmed, but not summarised." : (err as Error).message }); // only /compact gets here
     } finally {
       turn = undefined;
       answerAllNo();
@@ -163,7 +174,9 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
           limit: model ? await contextLimit(base, model).catch(() => undefined) : undefined,
           messages: history
             .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
-            .map((m) => ({ role: m.role, text: m.role === "user" ? withoutNote(m.content) : m.content })),
+            .map((m) =>
+              isSummary(m) ? { role: "note", text: "The conversation before this point was compacted into a summary." }
+              : { role: m.role, text: m.role === "user" ? withoutNote(m.content) : m.content }),
         });
       case "POST /api/send":
         if (turn) return busy();

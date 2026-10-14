@@ -4,6 +4,11 @@ import { describeCall, runTool, toolsFor, type Session } from "./tools.ts";
 import { loadRulebook, type Mode } from "./rules.ts";
 import { startCheckpoint, withoutNote } from "./undo.ts";
 import { CutOff, dim, streamReply, terminal, type Message, type Output, type Reply } from "./reply.ts";
+import { compact, compactIfFull, measured, NOTE_EXPLAINED } from "./compact.ts";
+
+// Read by the model in the summary after a cut-off answer was healed.
+const RETRY_NOTE =
+  "(Squid: your last reply was cut off because your memory filled up, so the conversation was compacted. Carry on from where you were. Keep each reply short: think briefly, and write at most one or two files per reply.)";
 
 // A model that keeps calling tools without ever answering may be stuck. The AI Lab's benchmark saw the
 // 30B model burn all 30 of its turns that way. After this many rounds the turn pauses and you decide.
@@ -17,6 +22,7 @@ export function startConversation(root: string, extra?: string): Message[] {
     "Every change and every command that isn't read-only is shown to the user, who approves or declines it. If they decline, don't try the same change again; follow their instructions if they gave any.",
     "Some files are off limits (secrets, holdout data, and anything the user's rules deny). If a tool says so, don't try to get around it.",
     "When a question is about the project, look before you answer, and say which files you read. Be concise.",
+    NOTE_EXPLAINED, // step 19's compaction leaves such notes
   ].join("\n");
   return [{ role: "system", content: extra ? `${prompt}\n\n${extra}` : prompt }];
 }
@@ -51,9 +57,21 @@ export async function agentTurn(
   // Each of your messages starts a checkpoint: /undo puts back what this turn changes (step 13).
   startCheckpoint(session.checkpoints, withoutNote([...messages].reverse().find((m) => m.role === "user")?.content ?? ""));
   let reply: Reply | undefined;
+  let healed = false; // a cut-off answer is healed once per turn: compact, then ask again
   for (let round = 1; round <= MAX_ROUNDS; round++) {
-    // The mode can change during a turn (an approved plan), so the tools and the note are fresh each round.
-    reply = await streamReply(base, { model, messages: withMode(messages, session.mode), tools: toolsFor(session.mode) }, signal, out);
+    await compactIfFull(base, model, messages, session, out, signal); // make room before it's needed (step 19)
+    try {
+      // The mode can change during a turn (an approved plan), so the tools and the note are fresh each round.
+      reply = await streamReply(base, { model, messages: withMode(messages, session.mode), tools: toolsFor(session.mode) }, signal, out);
+    } catch (err) {
+      // One long reply can still fill the memory. Make room and ask for that round again, once.
+      if (!(err instanceof CutOff && err.reason === "memory full") || healed || signal?.aborted) throw err;
+      healed = true;
+      out.note(dim("(that answer ran out of memory: compacting, then asking again)\n"));
+      await compact(base, model, messages, session, out, { inTurn: true, force: true, note: RETRY_NOTE, signal });
+      round--;
+      continue;
+    }
     model = reply.model;
     messages.push({
       role: "assistant",
@@ -65,6 +83,7 @@ export async function agentTurn(
         ? { tool_calls: reply.toolCalls.map((c) => ({ id: c.id, type: "function" as const, function: { name: c.name, arguments: c.arguments } })) }
         : {}),
     });
+    measured(messages, session, reply.usage?.total_tokens); // how full the memory is now, exactly
     if (!reply.toolCalls.length) return { model, reply }; // it answered in words: the turn is over
 
     for (const call of reply.toolCalls) {
@@ -107,13 +126,16 @@ export async function takeTurn(
   out: Output = terminal,
 ): Promise<Outcome> {
   forgetThinking(history);
-  const before = history.length;
-  history.push({ role: "user", content: note ? `${note}\n\n${text}` : text });
+  const request: Message = { role: "user", content: note ? `${note}\n\n${text}` : text };
+  history.push(request);
   const changed = () => [...(session.checkpoints.at(-1)?.snapshots.values() ?? [])].filter((s) => s.after !== null).map((s) => s.file);
   try {
     const turn = await agentTurn(base, model, history, session, signal, out);
     return { ...turn, kept: 0, changed: changed() };
   } catch (err) {
+    // Where your message is now: compaction (step 19) may have moved it, but it keeps the message itself.
+    const before = history.indexOf(request);
+    if (before < 0) return { model, error: err as Error, kept: 0, changed: changed(), note }; // can't happen: compaction keeps the message it's answering
     history.length = finishedLength(history, before);
     const kept = history.slice(before).filter((m) => m.role === "assistant").length;
     // Nothing finished: your message is left out, and a note it carried waits for the next one.

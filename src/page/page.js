@@ -274,6 +274,7 @@ async function start() {
   meter(state.used, state.limit);
   for (const m of state.messages) {
     if (m.role === "user") add(el("div", "you", m.text));
+    else if (m.role === "note") add(el("div", "info", m.text)); // a compacted summary (step 19)
     else render(add(el("div", "answer")), m.text);
   }
   if (state.busy) add(el("div", "info", "An answer is being written in another tab."));

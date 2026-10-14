@@ -10,6 +10,7 @@ export type Config = {
   defaultModel?: string; // used when no model is named: bare `squid`, `squid ask`
   defaultMode?: "manual" | "auto" | "plan"; // the mode a chat starts in (Claude Code: defaultMode); manual if unset
   jitTtlMinutes?: number; // idle time before an automatically loaded model is unloaded (LM Studio: 60)
+  compactAt?: number; // compact the conversation when the model's memory is this full, 0.3–0.9 (step 19; default 0.65)
   // Per-model load settings. runtime "squid" runs the model in Squid's own TypeScript engine (step 17).
   models?: Record<string, { contextLength?: number; parallel?: number; runtime?: "llama.cpp" | "squid" }>;
 };

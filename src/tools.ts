@@ -7,6 +7,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { decide, loadRulebook, parseRule, type Mode, type Rule, type Rulebook } from "./rules.ts";
 import { renderDiff } from "./diff.ts";
 import { remember, wrote, type Checkpoint } from "./undo.ts";
+import { COMPACT_AT } from "./compact.ts";
 import { CommandError, describeRun, insideFolder, isReadOnly, isShell, pathArguments, removesCriticalPath, resolveCommand, runCommand, splitCommand, type Command } from "./shell.ts";
 
 export type ToolCall = { id: string; name: string; arguments: string }; // arguments: JSON text, as the model wrote it
@@ -73,16 +74,19 @@ export type Session = {
   remembered: Rule[]; // commands you said "don't ask again" for, this session only
   choosePlan: PlanChooser;
   checkpoints: Checkpoint[]; // copies of files from before the agent changed them, for /undo (step 13)
+  compactAt: number; // compact the conversation when the model's memory is this full (step 19)
+  limit?: { model: string; tokens?: number }; // that memory's size, asked once per model
+  measured?: { tokens: number; chars: number }; // the last reply's token count, and the conversation's size then
 };
 export function newSession(
   root: string,
   approve: Approver = nobodyToAsk,
   show: (text: string) => void = () => {},
-  options: { mode?: Mode; choosePlan?: PlanChooser } = {},
+  options: { mode?: Mode; choosePlan?: PlanChooser; compactAt?: number } = {},
 ): Session {
   return {
     root, book: loadRulebook(root), approve, seen: new Map(), show, mode: options.mode ?? "manual", remembered: [],
-    choosePlan: options.choosePlan ?? nobodyToChoose, checkpoints: [],
+    choosePlan: options.choosePlan ?? nobodyToChoose, checkpoints: [], compactAt: options.compactAt ?? COMPACT_AT,
   };
 }
 

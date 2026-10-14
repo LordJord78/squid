@@ -49,7 +49,9 @@ const BROKEN = "The answer was cut off before it finished (the engine stopped, o
 // time) and are put back together by their index.
 export async function streamReply(
   base: string,
-  body: { model?: string; messages: Message[]; tools?: object[] },
+  // max_tokens caps the reply's length; chat_template_kwargs reach the model's chat template (step 19's
+  // summary turns the 27B's thinking off with { enable_thinking: false }).
+  body: { model?: string; messages: Message[]; tools?: object[]; max_tokens?: number; chat_template_kwargs?: object },
   signal?: AbortSignal,
   out: Output = terminal,
 ): Promise<Reply> {

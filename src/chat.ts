@@ -3,7 +3,8 @@
 // conversation so far; that list of messages *is* the chat's memory.
 import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
-import { contextLimit, dim, pickModel, type Message } from "./reply.ts";
+import { contextLimit, dim, pickModel, terminal, type Message } from "./reply.ts";
+import { compact } from "./compact.ts";
 import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
 import { relative } from "node:path";
 import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
@@ -34,6 +35,7 @@ const HELP = `/clear            forget the conversation and start a new one
 /model [name]     show or switch the model (it loads if needed)
 /mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab)
 /system [text]    show or set instructions the model follows from the next message
+/compact [focus]  make room in the model's memory: trim, then summarise (it happens by itself when 65% full)
 /undo             put back the files the agent changed for your last message (again: further back)
 /exit             leave (so does Ctrl+D, or Ctrl+C at an empty prompt)
 Ctrl+C while it's answering stops the answer.`;
@@ -69,6 +71,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
   const keyboard = process.stdin.isTTY;
   const session = newSession(root, keyboard ? keyboardApprover(question) : nobodyToAsk, (text) => process.stderr.write(text), {
     mode: options.mode ?? readConfig().defaultMode ?? "manual",
+    compactAt: readConfig().compactAt,
     choosePlan: keyboard ? keyboardPlanChooser(question) : undefined,
   }); // lasts the whole chat
   // The prompt is redrawn with the current mode each time, since a turn can change it (an approved plan).
@@ -114,6 +117,16 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
         if (MODES.includes(wanted as Mode)) session.mode = wanted as Mode;
         else if (wanted) process.stderr.write(`There's no mode called ${input.arg}: manual, auto or plan.\n`);
         process.stderr.write(dim(`Mode ${MODE_HELP[session.mode]}\n`));
+      } else if (input.name === "compact") {
+        // Claude Code's /compact: the summary replaces the conversation. An optional focus steers it.
+        if (history.length < 3) process.stderr.write(dim("Nothing to compact yet.\n"));
+        else {
+          answering = new AbortController(); // Ctrl+C stops the summary, as it stops an answer
+          await compact(base, model, history, session, terminal, { force: true, focus: input.arg || undefined, signal: answering.signal })
+            .then((done) => (used = done.after))
+            .catch((err: Error) => process.stderr.write(answering?.signal.aborted ? dim("\n(stopped: trimmed, but not summarised)\n") : `${err.message}\n`))
+            .finally(() => (answering = undefined));
+        }
       } else if (input.name === "system") {
         if (input.arg) {
           system = input.arg;

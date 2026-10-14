@@ -151,6 +151,22 @@ test("closing the tab while a question is open counts as No and ends the turn; t
   }
 });
 
+test("/compact from the page summarises; after a reload the page shows a note where the conversation was", async () => {
+  const p = await page([{ say: "Hello." }, { say: "SUMMARY: we said hello." }]);
+  try {
+    assert.ok((await p.say("/compact")).some((e) => e.type === "note" && /Nothing to compact yet/.test(e.text)));
+    await p.say("Hi");
+    const events = await p.say("/compact greetings");
+    assert.equal(p.fake.requests.length, 2, "the summary was the only request; /compact itself never reached the model as a message");
+    assert.match(p.fake.requests[1].messages.at(-1).content, /Pay special attention to: greetings/);
+    assert.ok(events.some((e) => e.type === "note" && /compacted into a summary/.test(e.text)));
+    assert.ok(events.some((e) => e.type === "done"));
+    assert.deepEqual((await (await p.call("/api/state")).json()).messages, [{ role: "note", text: "The conversation before this point was compacted into a summary." }]);
+  } finally {
+    p.close();
+  }
+});
+
 test("one turn at a time: while it's answering, sending, changing mode and starting over wait", async () => {
   const p = await page(RENAME);
   try {

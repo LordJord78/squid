@@ -85,8 +85,9 @@ test("a tool call cut off by a full memory is never run", async () => {
 });
 
 test("a turn that breaks off keeps the rounds it finished, and the model hears what happened", async () => {
-  // The 13 Oct incident in miniature: two files written, then the memory fills up during the third.
-  const fake = await scriptedServer([write("a.txt"), write("b.txt"), { ...write("c.txt"), cut: "length" }, { say: "Picking up where I left off." }]);
+  // The 13 Oct incident in miniature: two files written, then the third answer breaks off. (A full memory
+  // is healed by step 19's compaction; a broken connection isn't, so it shows step 18 on its own.)
+  const fake = await scriptedServer([write("a.txt"), write("b.txt"), { ...write("c.txt"), cut: "drop" }, { say: "Picking up where I left off." }]);
   const root = project();
   const session = writer(root);
   try {
@@ -102,7 +103,7 @@ test("a turn that breaks off keeps the rounds it finished, and the model hears w
     await takeTurn(fake.base, undefined, history, "continue", turn.note, session, undefined, collector().out);
     const sent = fake.requests[3].messages;
     assert.equal(sent.filter((m: Message) => m.role === "tool").length, 2, "the model still sees both finished rounds");
-    assert.match(sent.at(-1).content, /^\(Squid: your last answer was interrupted: your memory \(the context\) filled up\.[\s\S]*\n\ncontinue$/);
+    assert.match(sent.at(-1).content, /^\(Squid: your last answer was interrupted: the answer was cut off\.[\s\S]*\n\ncontinue$/);
     assert.equal(withoutNote(sent.at(-1).content), "continue");
   } finally {
     fake.close();
