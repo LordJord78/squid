@@ -45,9 +45,15 @@ squid unload --all        # free the GPU
 squid server stop         # stop the background server
 ```
 
+Long sessions look after themselves: when the model's memory is 65% full, Squid compacts the
+conversation (trims old file text, then summarises; `/compact` does it on request), a reply cut off by
+a full memory is retried once after compacting, and if a turn breaks off anyway the rounds it finished
+are kept. Each reply's thinking is capped at 4,096 tokens.
+
 Settings live in `~/.squid/config.json`, e.g.
-`{"defaultModel": "qwen3.8-27b-text", "models": {"qwen3.8-27b-text": {"contextLength": 49152}}}`.
-A model entry can also say `"runtime": "squid"`, so it always loads in Squid's own engine.
+`{"defaultModel": "qwen3.8-27b-text", "compactAt": 0.65, "models": {"qwen3.8-27b-text": {"contextLength": 49152, "reasoningBudget": 4096}}}`.
+A model entry can also say `"runtime": "squid"`, so it always loads in Squid's own engine, and
+`"engineArgs": [...]` passes extra flags to llama-server.
 The OpenAI-style API is at `http://127.0.0.1:1235/v1` (LM Studio uses 1234).
 
 ## Develop it
@@ -60,6 +66,7 @@ npm run capture:tokens    # re-record llama.cpp's tokenizer into golden/llamacpp
 npm run capture:forward   # re-record llama.cpp's next-token predictions for SmolLM2 (CPU only)
 npm run capture:sampling  # re-record llama.cpp's sampling, chat template and chats for SmolLM2 (CPU only)
 npm run capture:lmstudio-smol  # re-record LM Studio chatting with SmolLM2 (load it in LM Studio first)
+npm run soak              # the long-session test on the 27B: a project bigger than its memory (30-90 min)
 ```
 
 Replay any step with `git log --oneline` and `git show <sha>`.
@@ -68,7 +75,8 @@ Replay any step with `git log --oneline` and `git show <sha>`.
 
 | Path | What it is |
 |---|---|
-| `src/` | Squid itself (17 steps; `runtime.ts`, `transformer.ts`, `sampler.ts` and `tokenizer.ts` are the engine of its own) |
+| `src/` | Squid itself (21 steps; `runtime.ts`, `transformer.ts`, `sampler.ts` and `tokenizer.ts` are the engine of its own; `compact.ts` keeps long sessions inside the model's memory) |
+| `scripts/` | `get-engine.ps1` downloads llama.cpp; `soak.ts` is the long-session test |
 | `test/` | `node:test` tests, many comparing Squid against `golden/` |
 | `golden/lmstudio/` | Recordings of the real LM Studio: what Squid must match |
 | `golden/llamacpp/` | Recordings of llama.cpp itself (raw engine replies, its tokenizer, predictions, sampling) |

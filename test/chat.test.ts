@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { meter, parseLine, status } from "../src/chat.ts";
@@ -59,4 +59,27 @@ test("the chat remembers earlier turns, forgets on /clear, and stops at /exit", 
   assert.match(beforeClear, /purple/, "remembered from the first turn");
   assert.doesNotMatch(afterClear, /purple/, "forgotten after /clear (the last line is the last answer)");
   assert.match(run.stderr, /Started a new conversation/);
+});
+
+test("the background server stops between two messages: the chat starts it again and carries on", { skip: !ready && "engine or model drive missing", timeout: 300_000 }, async (t) => {
+  if (!(await serverStatus())) t.after(() => stopServer());
+  t.after(() => unload("qwen/qwen3.5-9b"));
+  const cli = fileURLToPath(new URL("../src/cli.ts", import.meta.url));
+  const chat = spawn(process.execPath, [cli, "chat", "--model", "qwen/qwen3.5-9b"], { cwd: tempDir() });
+  let stderr = "";
+  let stdout = "";
+  chat.stderr.on("data", (d) => (stderr += d));
+  chat.stdout.on("data", (d) => (stdout += d));
+  const answers = () => (stderr.match(/ tokens \(\d+%\)/g) ?? []).length; // one meter line per answer
+  const until = async (done: () => boolean) => {
+    for (let waited = 0; !done() && waited < 240_000; waited += 100) await new Promise((r) => setTimeout(r, 100));
+  };
+  chat.stdin.write("Reply with exactly: one\n");
+  await until(() => answers() === 1);
+  assert.equal(await stopServer(), true, "the server was running, and is stopped");
+  chat.stdin.write("Reply with exactly: two\n/exit\n");
+  await new Promise((resolve) => chat.on("exit", resolve));
+  assert.equal(answers(), 2, `both messages answered (stderr: ${stderr.slice(-300)})`);
+  assert.match(stdout.toLowerCase(), /two/);
+  assert.ok(await serverStatus(), "the server is running again");
 });

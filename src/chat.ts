@@ -60,7 +60,10 @@ const MODE_HELP: Record<Mode, string> = {
 };
 
 export async function chat(options: { model?: string; system?: string; mode?: Mode }): Promise<void> {
-  const base = `http://127.0.0.1:${(await ensureServer()).port}`;
+  // Looked up again before each message: if the background server has stopped (closed, crashed, or
+  // `squid server stop`), it is started again rather than leaving the chat stuck (step 21).
+  const server = async () => `http://127.0.0.1:${(await ensureServer()).port}`;
+  let base = await server();
   const root = process.cwd(); // the folder the model may look at: wherever you typed `squid`
   let model = options.model && (await pickModel(base, options.model)); // undefined: the server picks the loaded or default model
   let system = options.system;
@@ -148,6 +151,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
     } else if (input.kind === "say") {
       answering = new AbortController();
       try {
+        base = await server().catch(() => base); // if it can't start, the request below says so
         // The agent loop adds the answer, plus any tool calls and their results, to the history.
         const turn = await takeTurn(base, model, history, input.text, pendingNote, session, answering.signal);
         pendingNote = turn.note;

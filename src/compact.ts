@@ -82,7 +82,7 @@ export async function compact(
   session.measured = undefined; // the next reply measures again
   let after = estimate(messages, session);
   const full = limit ? ` ${Math.round((100 * before) / limit)}% full` : "";
-  out.note(dim(`(memory${full}: trimmed old file contents, tool results and thinking: ~${k(before)} → ~${k(after)} tokens)\n`));
+  if (after < before) out.note(dim(`(memory${full}: trimmed old file contents, tool results and thinking: ~${k(before)} → ~${k(after)} tokens)\n`));
   if (!options.force && limit && after <= limit * ROOMY) return { before, after, summarised: false };
 
   out.note(dim("(summarising the conversation to make more room; this takes a moment…)\n"));

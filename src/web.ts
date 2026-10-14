@@ -47,8 +47,11 @@ export type Event =
 
 export type Web = { url: string; port: number; token: string; close: () => void };
 
-export async function startWeb(options: { base: string; root: string; mode: Mode; model?: string; system?: string; port?: number }): Promise<Web> {
-  const { base, root } = options;
+// `reconnect`: finds the server again before each message (squid web passes ensureServer, which restarts
+// a server that has stopped; tests talk to a scripted one and leave it out).
+export async function startWeb(options: { base: string; root: string; mode: Mode; model?: string; system?: string; port?: number; reconnect?: () => Promise<string> }): Promise<Web> {
+  const { root } = options;
+  let base = options.base;
   const token = randomBytes(24).toString("hex"); // 192 random bits: the key in the link
   let model = options.model; // undefined: the server picks the loaded or default model
   let history: Message[] = startConversation(root, options.system);
@@ -108,6 +111,7 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
     };
     const done = async () => send({ type: "done", model: model ?? "", used, limit: model ? await contextLimit(base, model).catch(() => undefined) : undefined, mode: session.mode });
     try {
+      if (options.reconnect) base = await options.reconnect().catch(() => base);
       // /compact, as in the chat (step 19). Typed into the page like a message, but not sent to the model.
       const asked = /^\/compact(\s|$)/i.exec(text);
       if (asked) {
@@ -249,7 +253,8 @@ export async function web(options: { model?: string; mode?: Mode; port?: number;
   const base = `http://127.0.0.1:${(await ensureServer()).port}`;
   const root = process.cwd();
   const model = options.model && (await pickModel(base, options.model));
-  const page = await startWeb({ base, root, model, mode: options.mode ?? readConfig().defaultMode ?? "manual", port: options.port });
+  const reconnect = async () => `http://127.0.0.1:${(await ensureServer()).port}`;
+  const page = await startWeb({ base, root, model, mode: options.mode ?? readConfig().defaultMode ?? "manual", port: options.port, reconnect });
   console.log(`Squid's page for ${root}:\n\n    ${page.url}\n\nOnly this PC can open it, and only with that link. Ctrl+C here stops it.`);
   // rundll32 hands the link to Windows, which opens your default browser. No shell reads the link (step 11).
   if (options.open) spawn("rundll32", ["url.dll,FileProtocolHandler", page.url], { detached: true, stdio: "ignore" }).unref();

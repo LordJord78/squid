@@ -267,8 +267,21 @@ export async function unload(identifier: string): Promise<boolean> {
   for (let waited = 0; isEngine(engine) && waited < 10_000; waited += 100) {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  rmSync(recordFile(identifier), { force: true });
+  forget(engine);
   return true;
+}
+
+// Removes an engine's record, but only if it's still that engine's. While unload waits for an engine to
+// exit, a chat can find it gone and load the model again under the same name (step 21 saw it happen):
+// deleting that new record would leave a 14 GB engine running that no command can see or stop.
+export function forget(engine: Pick<Engine, "identifier" | "pid">): void {
+  const file = recordFile(engine.identifier);
+  try {
+    if (JSON.parse(readFileSync(file, "utf8")).pid !== engine.pid) return; // a newer engine's record
+  } catch {
+    // no record, or a broken one: nothing to keep
+  }
+  rmSync(file, { force: true });
 }
 
 async function health(engine: Engine): Promise<"ok" | "loading" | "down"> {

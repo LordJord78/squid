@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENGINE, engineArgs, lmstudioTuning, load, running, secondsLeft, settingsFor, THINKING_BUDGET, unload, type Engine } from "../src/engine.ts";
+import { ENGINE, engineArgs, forget, lmstudioTuning, load, running, secondsLeft, settingsFor, THINKING_BUDGET, unload, type Engine } from "../src/engine.ts";
+import { SQUID_HOME } from "../src/config.ts";
 import { listModels, modelRoots, type ShelfModel } from "../src/models.ts";
 import { tempDir } from "./helpers.ts";
 
@@ -47,6 +48,24 @@ test("a thinking budget and extra flags reach llama-server's command line", () =
   assert.ok(!unlimited.includes("--reasoning-budget"), "-1: no budget, llama.cpp's default");
   const plain = engineArgs(fakeModel("m.gguf"), "m", 50000, "k", settingsFor({}, {}, {}));
   assert.equal(plain[plain.indexOf("--reasoning-budget") + 1], String(THINKING_BUDGET), "unset: Squid's default budget");
+});
+
+test("unload removes an engine's record only if it's still that engine's", () => {
+  // Step 21: while unload waited for an engine to exit, a chat loaded the model again under the same name;
+  // removing the record by name alone left the new engine running, invisible to ps and unload.
+  const identifier = "squid-forget-test";
+  const file = join(SQUID_HOME, "loaded", `${identifier}.json`);
+  mkdirSync(dirname(file), { recursive: true });
+  try {
+    writeFileSync(file, JSON.stringify({ identifier, pid: 222 })); // the newer engine's record
+    forget({ identifier, pid: 111 }); // the old one has exited
+    assert.ok(existsSync(file), "the newer engine's record stays");
+    forget({ identifier, pid: 222 });
+    assert.ok(!existsSync(file), "its own record goes");
+    forget({ identifier, pid: 222 }); // and no record at all is fine
+  } finally {
+    rmSync(file, { force: true });
+  }
 });
 
 test("the idle timer counts from the last answer", () => {

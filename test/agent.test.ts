@@ -9,7 +9,7 @@ import { CutOff, type Message, type Output } from "../src/reply.ts";
 import { withoutNote } from "../src/undo.ts";
 import { startServer } from "../src/server.ts";
 import { newSession, type Approval } from "../src/tools.ts";
-import { ENGINE, unload } from "../src/engine.ts";
+import { ENGINE, running, unload } from "../src/engine.ts";
 import { scriptedServer, tempDir } from "./helpers.ts";
 
 // Collects what the agent would print, instead of printing it.
@@ -293,6 +293,45 @@ test("the real model plans first, then carries out the approved plan", { skip: !
       assert.equal(asked.length, 0, "no edit questions after the plan was approved for auto mode");
       break;
     }
+  } finally {
+    server.close();
+  }
+});
+test("the engine dies: between rounds the server just loads it again; mid-answer, the finished round is kept", { skip: !ready && "engine or model drive missing", timeout: 300_000 }, async (t) => {
+  t.after(() => unload("qwen/qwen3.5-9b"));
+  const root = project();
+  const server = await startServer(0); // the real server: loads the 9B on demand
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const session = newSession(root);
+  const kill = () => running(true).forEach((engine) => process.kill(engine.pid)); // as a crash or `squid unload` would
+  const ask = "First call list_files. Then read README.md and tell me the codename.";
+  try {
+    // Killed after a tool result, before the next request: the server finds the engine gone and loads
+    // the model again (step 06's load on demand), so the turn simply carries on.
+    let killedBetween = false;
+    const between: Output = { ...collector().out, note: (text) => text.includes("⎿") && !killedBetween && ((killedBetween = true), kill()) };
+    const healed = await takeTurn(base, "qwen/qwen3.5-9b", startConversation(root), ask, undefined, session, undefined, between);
+    assert.ok(killedBetween);
+    assert.equal(healed.error, undefined, "the turn finished as if nothing had happened");
+
+    // Killed while the second reply is being written: that reply is lost, the first round is kept.
+    const history = startConversation(root);
+    let results = 0;
+    let killed = false;
+    const midAnswer: Output = {
+      answer: () => killed || results < 1 || ((killed = true), kill()),
+      thinking: () => killed || results < 1 || ((killed = true), kill()),
+      note: (text) => text.includes("⎿") && results++,
+    };
+    const first = await takeTurn(base, "qwen/qwen3.5-9b", history, ask, undefined, session, undefined, midAnswer);
+    assert.ok(killed, "it used a tool, then started its next reply, and the engine was killed");
+    assert.ok(first.error, "the turn broke off");
+    assert.ok(first.kept >= 1, "the finished round was kept");
+    assert.match(first.note!, /^\(Squid: your last answer was interrupted/);
+
+    const second = await takeTurn(base, "qwen/qwen3.5-9b", history, "Go on: what's the codename?", first.note, session, undefined, collector().out);
+    assert.equal(second.error, undefined, "the next message loaded the model again and was answered");
+    assert.match(history.filter((m) => m.role === "assistant").map((m) => m.content).join("\n"), /Blue Heron/i);
   } finally {
     server.close();
   }
