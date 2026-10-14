@@ -36,14 +36,15 @@ export function tempDir(): string {
 
 // A stand-in for Squid's server that follows a script: each chat request gets the next step, either a
 // tool call or an answer, streamed in LM Studio's format with the arguments cut into 5-character pieces.
-// It also answers the model list, as a loaded model "fake" with an 8,192-token context.
+// It also answers the model list: "fake", with an 8,192-token context once a chat request has loaded it.
 // A tool call can also break off halfway, as a real one does when the model's memory fills up: `cut:
 // "length"` ends it with finish_reason "length" (what llama.cpp sends), `cut: "drop"` hangs up mid-call.
 export type Step = { tool: [string, object]; cut?: "length" | "drop" } | { say: string };
 export async function scriptedServer(script: Step[]) {
   const requests: any[] = [];
   const server = createServer(async (req, res) => {
-    if (req.url === "/api/v0/models") return res.end(JSON.stringify({ data: [{ id: "fake", loaded_context_length: 8192 }] }));
+    // Like Squid's server, it knows the context size only once the model is loaded: after the first chat request.
+    if (req.url === "/api/v0/models") return res.end(JSON.stringify({ data: [{ id: "fake", ...(requests.length && { loaded_context_length: 8192 }) }] }));
     let body = "";
     for await (const chunk of req) body += chunk;
     requests.push(JSON.parse(body));

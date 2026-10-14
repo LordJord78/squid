@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { startConversation, takeTurn } from "../src/agent.ts";
-import { estimate, isSummary, latestRound, SUMMARY_HEADER, summaryPrompt, trim } from "../src/compact.ts";
+import { estimate, isSummary, latestRound, limitFor, SUMMARY_HEADER, summaryPrompt, trim } from "../src/compact.ts";
 import type { Message, Output } from "../src/reply.ts";
 import { newSession } from "../src/tools.ts";
 import { withoutNote } from "../src/undo.ts";
@@ -143,6 +143,20 @@ test("a second cut-off in the same turn isn't retried forever: the finished work
     assert.equal(fake.requests.length, 4, "asked once more, not again and again");
     assert.equal(turn.kept, 1, "the a.txt round, which the summary kept as the latest round");
     assert.ok(existsSync(join(root, "a.txt")) && !existsSync(join(root, "b.txt")));
+  } finally {
+    fake.close();
+  }
+});
+
+test("the memory size is asked for again until the model is loaded", async () => {
+  // The first request of a chat is what loads the model; before it, the server can't say how big its
+  // memory is. Caching that "unknown" switched automatic compaction off for a whole session.
+  const fake = await scriptedServer([{ say: "Hi." }]);
+  const session = newSession(tempDir());
+  try {
+    assert.equal(await limitFor(fake.base, "fake", session), undefined, "not loaded yet");
+    await takeTurn(fake.base, "fake", startConversation(session.root), "Hello.", undefined, session, undefined, collector().out);
+    assert.equal(await limitFor(fake.base, "fake", session), 8192, "asked again, and now known");
   } finally {
     fake.close();
   }

@@ -34,10 +34,15 @@ export function measured(messages: Message[], session: Session, totalTokens: num
   if (totalTokens) session.measured = { tokens: totalTokens, chars: charsOf(messages) };
 }
 
-// The model's memory size, asked once per model (switching models with /model asks again).
+// The model's memory size, asked once per model (switching models with /model asks again). The server
+// only knows it once the model is loaded, and a chat's first request is what loads it. So an unknown
+// size is asked for again next time: caching "unknown" switched automatic compaction off for a whole
+// session (found by the soak test, step 21).
 export async function limitFor(base: string, model: string | undefined, session: Session): Promise<number | undefined> {
   if (!model) return undefined;
-  if (session.limit?.model !== model) session.limit = { model, tokens: await contextLimit(base, model).catch(() => undefined) };
+  if (session.limit?.model !== model || session.limit.tokens === undefined) {
+    session.limit = { model, tokens: await contextLimit(base, model).catch(() => undefined) };
+  }
   return session.limit.tokens;
 }
 

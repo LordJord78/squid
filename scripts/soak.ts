@@ -5,7 +5,7 @@
 // It passes if the build finishes without an error, the memory was compacted at least once on the way,
 // and the answer names at least 80% of the Python files it created. It takes 30-60 minutes; the report
 // goes to stdout (tee it to a file) and ends with PASS or FAIL.
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -63,13 +63,10 @@ try {
 
   const files = pythonFiles(root);
   log(`files: ${files.join(", ")}`);
-  let tests = "";
-  try {
-    tests = execFileSync("python", ["-B", "run_tests.py"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
-  } catch (err: any) {
-    tests = String(err.stderr ?? err.stdout ?? err.message);
-  }
-  log(`its tests: ${tests.trim().split("\n").filter((l) => /^(Ran|OK|FAILED)/.test(l)).join(" · ") || "no summary"}`);
+  // unittest prints its summary ("Ran 95 tests", "OK") to stderr, so both streams are read.
+  const run = spawnSync("python", ["-B", "run_tests.py"], { cwd: root, encoding: "utf8", timeout: 120_000 });
+  const tests = `${run.stdout ?? ""}\n${run.stderr ?? ""}`;
+  log(`its tests: ${tests.split("\n").filter((l) => /^(Ran|OK|FAILED)/.test(l.trim())).join(" · ") || "no summary"}`);
 
   const recall = await turn(RECALL);
   const said = (recall.reply?.content ?? "").toLowerCase();
