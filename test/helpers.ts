@@ -37,7 +37,9 @@ export function tempDir(): string {
 // A stand-in for Squid's server that follows a script: each chat request gets the next step, either a
 // tool call or an answer, streamed in LM Studio's format with the arguments cut into 5-character pieces.
 // It also answers the model list, as a loaded model "fake" with an 8,192-token context.
-export type Step = { tool: [string, object] } | { say: string };
+// A tool call can also break off halfway, as a real one does when the model's memory fills up: `cut:
+// "length"` ends it with finish_reason "length" (what llama.cpp sends), `cut: "drop"` hangs up mid-call.
+export type Step = { tool: [string, object]; cut?: "length" | "drop" } | { say: string };
 export async function scriptedServer(script: Step[]) {
   const requests: any[] = [];
   const server = createServer(async (req, res) => {
@@ -54,8 +56,10 @@ export async function scriptedServer(script: Step[]) {
       const [name, args] = step.tool;
       send({ tool_calls: [{ index: 0, id: `call${requests.length}`, type: "function", function: { name, arguments: "" } }] });
       const text = JSON.stringify(args);
-      for (let i = 0; i < text.length; i += 5) send({ tool_calls: [{ index: 0, type: "function", function: { arguments: text.slice(i, i + 5) } }] });
-      send({}, "tool_calls");
+      const upTo = step.cut ? Math.floor(text.length / 2) : text.length;
+      for (let i = 0; i < upTo; i += 5) send({ tool_calls: [{ index: 0, type: "function", function: { arguments: text.slice(i, Math.min(i + 5, upTo)) } }] });
+      if (step.cut === "drop") return res.destroy();
+      send({}, step.cut ?? "tool_calls");
     } else {
       send({ content: step.say });
       send({}, "stop");

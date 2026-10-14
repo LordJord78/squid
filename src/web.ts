@@ -7,7 +7,7 @@ import { randomBytes, timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { relative } from "node:path";
-import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
+import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
 import { answerFrom, planChoiceFrom } from "./approve.ts";
 import { readConfig } from "./config.ts";
 import { ensureServer } from "./daemon.ts";
@@ -15,7 +15,7 @@ import { contextLimit, pickModel, type Message, type Output } from "./reply.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { sseEvent } from "./sse.ts";
 import { newSession, writeAtomically, type Approval } from "./tools.ts";
-import { applyUndo, describeUndo, planUndo, undoNote, withoutNote } from "./undo.ts";
+import { applyUndo, describeUndo, planUndo, undoNote, withNote, withoutNote } from "./undo.ts";
 
 // The two files the browser loads. The script is its own file, not written into the page, so the
 // security policy can say "only scripts from this server run": anything that sneaks into the page can't.
@@ -100,25 +100,22 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
         answerAllNo();
       }
     });
-    forgetThinking(history);
-    const before = history.length;
-    const note = pendingNote;
-    history.push({ role: "user", content: note ? `${note}\n\n${text}` : text });
-    pendingNote = undefined;
     const out: Output = {
       answer: (t) => send({ type: "answer", text: t }),
       thinking: (t) => send({ type: "thinking", text: t }),
       note: (t) => send({ type: "note", text: plain(t) }),
     };
     try {
-      const result = await agentTurn(base, model, history, session, stop.signal, out);
-      model = result.model;
-      used = result.reply.usage?.total_tokens ?? used;
-      send({ type: "done", model, used, limit: await contextLimit(base, model).catch(() => undefined), mode: session.mode });
-    } catch (err) {
-      history.length = before; // as in the chat: the unanswered message is dropped, with any tool calls it started
-      pendingNote = note; // ...but the model still needs to hear about the undo, with the next one
-      send({ type: "error", message: stop.signal.aborted ? "Stopped. That message was left out of the conversation." : (err as Error).message });
+      // The same turn as the chat's (agent.ts): if it breaks off, the rounds that finished are kept.
+      const result = await takeTurn(base, model, history, text, pendingNote, session, stop.signal, out);
+      pendingNote = result.note;
+      if (result.error) send({ type: "error", message: brokeOff(result, stop.signal.aborted, name) });
+      else {
+        model = result.model!;
+        used = result.reply?.usage?.total_tokens ?? used;
+        if (result.paused) send({ type: "note", text: `(paused after ${MAX_ROUNDS} rounds of tool calls without an answer; say "continue" to carry on)\n` });
+        send({ type: "done", model, used, limit: await contextLimit(base, model).catch(() => undefined), mode: session.mode });
+      }
     } finally {
       turn = undefined;
       answerAllNo();
@@ -204,7 +201,7 @@ export async function startWeb(options: { base: string; root: string; mode: Mode
         // The page confirms the undo it was shown. If the newest change is a different one now, it looks again.
         if (!plan || plan.checkpoint.label !== body.label) return reply(res, 409, { error: "The last change is different now; press Undo again to see it." });
         applyUndo(session.checkpoints, plan, writeAtomically);
-        if (plan.restore.length) pendingNote = undoNote(plan.checkpoint.label, plan.restore.map((s) => name(s.file)));
+        if (plan.restore.length) pendingNote = withNote([pendingNote, undoNote(plan.checkpoint.label, plan.restore.map((s) => name(s.file)))]);
         return reply(res, 200, { undone: plan.restore.length });
       }
       default:

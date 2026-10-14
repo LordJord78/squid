@@ -31,6 +31,19 @@ export const terminal: Output = {
   note: (text) => process.stderr.write(text),
 };
 
+// An answer that didn't finish. Either the model's memory (its context) filled up mid-answer, or the
+// engine or the connection broke. What it wrote so far can't be trusted (a tool call may be half
+// written), so none of it is used.
+export class CutOff extends Error {
+  readonly reason: "memory full" | "broken";
+  constructor(reason: "memory full" | "broken", message = reason === "memory full" ? MEMORY_FULL : BROKEN) {
+    super(message);
+    this.reason = reason;
+  }
+}
+const MEMORY_FULL = "The model's memory (its context) filled up in the middle of the answer.";
+const BROKEN = "The answer was cut off before it finished (the engine stopped, or the connection broke).";
+
 // Sends a chat and shows the reply as it streams in. Returns all of it: the answer, the thinking, and
 // any tool calls, which arrive in pieces (the name first, then the arguments a few characters at a
 // time) and are put back together by their index.
@@ -46,43 +59,61 @@ export async function streamReply(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
     signal,
+  }).catch((err) => {
+    if (signal?.aborted) throw err;
+    throw new CutOff("broken"); // the connection broke before the answer began
   });
-  if (!res.ok) throw new Error(errorText(await res.json()));
+  if (!res.ok) {
+    const refusal = await res.json();
+    // llama.cpp refuses a conversation that no longer fits: {"error": {"type": "exceed_context_size_error", ...}}
+    if (refusal.error?.type === "exceed_context_size_error") throw new CutOff("memory full", "The conversation no longer fits in the model's memory (its context).");
+    throw new Error(errorText(refusal));
+  }
 
   const reply: Reply = { model: body.model ?? "", content: "", reasoning: "", toolCalls: [] };
   let firstWord: number | undefined;
   let thinking = false;
-  for await (const data of sseData(res.body!)) {
-    if (data === "[DONE]") break;
-    const chunk = JSON.parse(data);
-    reply.model = chunk.model; // which model answered (the server may have picked it)
-    if (chunk.usage) reply.usage = chunk.usage;
-    const choice = chunk.choices[0];
-    if (!choice) continue;
-    if (choice.finish_reason) reply.finishReason = choice.finish_reason;
-    const delta = choice.delta ?? {};
-    if ((delta.reasoning_content || delta.content) && firstWord === undefined) firstWord = performance.now();
-    if (delta.reasoning_content) {
-      out.thinking(delta.reasoning_content);
-      reply.reasoning += delta.reasoning_content;
-      thinking = true;
+  try {
+    for await (const data of sseData(res.body!)) {
+      if (data === "[DONE]") break;
+      const chunk = JSON.parse(data);
+      reply.model = chunk.model; // which model answered (the server may have picked it)
+      if (chunk.usage) reply.usage = chunk.usage;
+      const choice = chunk.choices[0];
+      if (!choice) continue;
+      if (choice.finish_reason) reply.finishReason = choice.finish_reason;
+      const delta = choice.delta ?? {};
+      if ((delta.reasoning_content || delta.content) && firstWord === undefined) firstWord = performance.now();
+      if (delta.reasoning_content) {
+        out.thinking(delta.reasoning_content);
+        reply.reasoning += delta.reasoning_content;
+        thinking = true;
+      }
+      if ((delta.content || delta.tool_calls) && thinking) {
+        out.thinking("\n"); // a line between the thinking and what follows
+        thinking = false;
+      }
+      if (delta.content) {
+        out.answer(delta.content);
+        reply.content += delta.content;
+      }
+      for (const piece of delta.tool_calls ?? []) {
+        const call = (reply.toolCalls[piece.index] ??= { id: "", name: "", arguments: "" });
+        if (piece.id) call.id = piece.id;
+        if (piece.function?.name) call.name += piece.function.name;
+        if (piece.function?.arguments) call.arguments += piece.function.arguments;
+      }
     }
-    if ((delta.content || delta.tool_calls) && thinking) {
-      out.thinking("\n"); // a line between the thinking and what follows
-      thinking = false;
-    }
-    if (delta.content) {
-      out.answer(delta.content);
-      reply.content += delta.content;
-    }
-    for (const piece of delta.tool_calls ?? []) {
-      const call = (reply.toolCalls[piece.index] ??= { id: "", name: "", arguments: "" });
-      if (piece.id) call.id = piece.id;
-      if (piece.function?.name) call.name += piece.function.name;
-      if (piece.function?.arguments) call.arguments += piece.function.arguments;
-    }
+  } catch (err) {
+    if (signal?.aborted) throw err; // you stopped it (Ctrl+C): that's not a breakdown
+    throw new CutOff("broken");
+  } finally {
+    if (reply.content) out.answer("\n");
   }
-  if (reply.content) out.answer("\n");
+  // A finished answer always says why it ended. No reason means the stream just stopped.
+  if (!reply.finishReason) throw new CutOff("broken");
+  // "length": it ran out of room. Words already shown can stay, but a tool call may be half written.
+  if (reply.finishReason === "length" && reply.toolCalls.length) throw new CutOff("memory full");
   reply.toolCalls = reply.toolCalls.filter(Boolean);
   if (firstWord !== undefined) {
     reply.secondsToFirstWord = (firstWord - started) / 1000;

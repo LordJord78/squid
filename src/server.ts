@@ -216,6 +216,7 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
   const id = `chatcmpl-${randomId()}`;
   let thinking = ""; // collected to count thinking tokens for the usage event
   let roleSent = false;
+  let finished = false; // the engine said why the answer ended ("stop", "tool_calls", "length")
   const stray = new StrayThinkTag();
   try {
     for await (const data of sseData(incoming)) {
@@ -241,6 +242,7 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
           else delete delta.content; // held back for now
         }
         if (c.finish_reason != null) {
+          finished = true;
           const rest = stray.flush(); // the answer ended while something was held back
           if (rest) delta.content = rest + (delta.content ?? "");
         }
@@ -255,10 +257,13 @@ async function streamChat(res: ServerResponse, engine: Engine, body: any) {
       }
     }
   } catch {
-    // The engine went away mid-answer. Cut the connection rather than send [DONE], so the app can tell
-    // a broken answer from a finished one.
-    return res.destroy();
+    finished = false;
   }
+  // The engine went away mid-answer, or stopped without saying why the answer ended. That happened on
+  // 13 Oct: the 27B's context filled mid tool call, llama.cpp failed to read the half-written call
+  // ("Failed to parse tool call arguments as JSON") and the stream ended with no finish_reason. Cut
+  // the connection rather than send [DONE], so the app can tell a broken answer from a finished one.
+  if (!finished) return res.destroy();
   res.end(sseEvent("[DONE]"));
 }
 

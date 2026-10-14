@@ -4,8 +4,9 @@ import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 
 import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
-import { agentTurn, forgetThinking, MAX_ROUNDS, startConversation } from "../src/agent.ts";
-import type { Message, Output } from "../src/reply.ts";
+import { agentTurn, brokeOff, finishedLength, forgetThinking, interruptedNote, MAX_ROUNDS, startConversation, takeTurn } from "../src/agent.ts";
+import { CutOff, type Message, type Output } from "../src/reply.ts";
+import { withoutNote } from "../src/undo.ts";
 import { startServer } from "../src/server.ts";
 import { newSession, type Approval } from "../src/tools.ts";
 import { ENGINE, unload } from "../src/engine.ts";
@@ -49,15 +50,103 @@ test("the loop runs the tools the model asks for and sends the results back", as
   }
 });
 
-test("a model that never stops calling tools is stopped", async () => {
+test("a model that never stops calling tools is paused, with every finished round kept", async () => {
   const fake = await scriptedServer([{ tool: ["list_files", {}] }]); // the same request forever
   const root = project();
   try {
-    await assert.rejects(agentTurn(fake.base, undefined, [{ role: "user", content: "hi" }], newSession(root), undefined, collector().out), /stopped after 25 rounds/);
+    const messages: Message[] = [{ role: "user", content: "hi" }];
+    const turn = await agentTurn(fake.base, undefined, messages, newSession(root), undefined, collector().out);
+    assert.equal(turn.paused, true);
     assert.equal(fake.requests.length, MAX_ROUNDS);
+    assert.equal(messages.length, 1 + 2 * MAX_ROUNDS, "each round: the call and its result");
+    assert.equal(messages.at(-1)!.role, "tool", "your next message (\"continue\") picks up after the last result");
   } finally {
     fake.close();
   }
+});
+
+// Step 18. Writing files needs auto mode here: in manual mode nobody is at the keyboard to say yes.
+const writer = (root: string) => newSession(root, undefined, undefined, { mode: "auto" });
+const write = (path: string) => ({ tool: ["write_file", { path, content: `This is ${path}.\n` }] as [string, object] });
+
+test("a tool call cut off by a full memory is never run", async () => {
+  for (const cut of ["length", "drop"] as const) {
+    const fake = await scriptedServer([{ ...write("half.txt"), cut }]);
+    const root = project();
+    try {
+      const error = await agentTurn(fake.base, undefined, [{ role: "user", content: "hi" }], writer(root), undefined, collector().out).catch((err) => err);
+      assert.ok(error instanceof CutOff, cut);
+      assert.equal(error.reason, cut === "length" ? "memory full" : "broken");
+      assert.equal(existsSync(join(root, "half.txt")), false, "the half-written call didn't run");
+    } finally {
+      fake.close();
+    }
+  }
+});
+
+test("a turn that breaks off keeps the rounds it finished, and the model hears what happened", async () => {
+  // The 13 Oct incident in miniature: two files written, then the memory fills up during the third.
+  const fake = await scriptedServer([write("a.txt"), write("b.txt"), { ...write("c.txt"), cut: "length" }, { say: "Picking up where I left off." }]);
+  const root = project();
+  const session = writer(root);
+  try {
+    const history = startConversation(root);
+    const turn = await takeTurn(fake.base, undefined, history, "Write three files.", undefined, session, undefined, collector().out);
+    assert.ok(turn.error instanceof CutOff);
+    assert.equal(turn.kept, 2);
+    assert.deepEqual(turn.changed.map((f) => f.slice(root.length + 1)), ["a.txt", "b.txt"]);
+    assert.equal(existsSync(join(root, "c.txt")), false);
+    assert.deepEqual(history.map((m) => m.role), ["system", "user", "assistant", "tool", "assistant", "tool"], "only the cut-off reply is gone");
+    assert.match(brokeOff(turn, false, (f) => f.slice(root.length + 1)), /The 2 rounds of tool calls it finished are kept \(files changed: a\.txt, b\.txt\)/);
+
+    await takeTurn(fake.base, undefined, history, "continue", turn.note, session, undefined, collector().out);
+    const sent = fake.requests[3].messages;
+    assert.equal(sent.filter((m: Message) => m.role === "tool").length, 2, "the model still sees both finished rounds");
+    assert.match(sent.at(-1).content, /^\(Squid: your last answer was interrupted: your memory \(the context\) filled up\.[\s\S]*\n\ncontinue$/);
+    assert.equal(withoutNote(sent.at(-1).content), "continue");
+  } finally {
+    fake.close();
+  }
+});
+
+test("Ctrl+C keeps the finished rounds too; if nothing finished, the message is left out as before", async () => {
+  const fake = await scriptedServer([write("a.txt"), write("b.txt")]);
+  const root = project();
+  try {
+    const history = startConversation(root);
+    const stop = new AbortController();
+    const out: Output = { ...collector().out, note: (t) => t.includes("⎿") && stop.abort() }; // stop once the first result is in
+    const turn = await takeTurn(fake.base, undefined, history, "Write two files.", undefined, writer(root), stop.signal, out);
+    assert.equal(turn.kept, 1);
+    assert.match(brokeOff(turn, true, (f) => f), /^Stopped\. The round of tool calls it finished is kept/);
+    assert.match(turn.note!, /interrupted: the user stopped it/);
+
+    const fresh = startConversation(root);
+    const broken = await scriptedServer([{ ...write("a.txt"), cut: "drop" }]);
+    const nothing = await takeTurn(broken.base, undefined, fresh, "Write it.", "(Squid: an earlier note.)", writer(root), undefined, collector().out);
+    broken.close();
+    assert.equal(nothing.kept, 0);
+    assert.equal(fresh.length, 1, "your message was left out");
+    assert.equal(nothing.note, "(Squid: an earlier note.)", "a note it carried waits for the next message");
+  } finally {
+    fake.close();
+  }
+});
+
+test("only rounds whose calls all got results count as finished", () => {
+  const call = (id: string) => ({ id, type: "function" as const, function: { name: "list_files", arguments: "{}" } });
+  const messages: Message[] = [
+    { role: "system", content: "" },
+    { role: "user", content: "go" },
+    { role: "assistant", content: "", tool_calls: [call("1")] },
+    { role: "tool", tool_call_id: "1", content: "ok" },
+    { role: "assistant", content: "", tool_calls: [call("2"), call("3")] },
+    { role: "tool", tool_call_id: "2", content: "ok" }, // call 3 never ran
+  ];
+  assert.equal(finishedLength(messages, 1), 4);
+  assert.equal(finishedLength(messages.slice(0, 3), 1), 1, "no finished round: back to where the turn began");
+  const undone = '(Squid: the user undid your changes from "y". These files are back as they were before: z.)';
+  assert.equal(withoutNote(`${interruptedNote("x")}\n\n${undone}\n\nhello`), "hello", "notes can stack");
 });
 
 test("plan mode: look, try an edit (blocked), submit the plan, get it approved, then edit without a question", async () => {

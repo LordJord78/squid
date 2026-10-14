@@ -244,6 +244,26 @@ test("hanging up mid-answer stops the engine", async () => {
   }
 });
 
+test("an engine that stops without saying why the answer ended gets the app's connection cut, not [DONE]", async () => {
+  // What the 27B's engine did on 13 Oct: its context filled mid tool call, it failed to read the
+  // half-written call, and its stream ended with no finish_reason.
+  const failing = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/event-stream" });
+    res.write('data: {"created":1,"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"c1","type":"function","function":{"name":"write_file","arguments":"{\\"path\\": \\"READ"}}]}}]}\n\n');
+    res.end('error: {"code":500,"message":"Failed to parse tool call arguments as JSON","type":"server_error"}\n\n');
+  });
+  await new Promise<void>((resolve) => failing.listen(0, "127.0.0.1", resolve));
+  const engine = engineRecord(portOf(failing));
+  try {
+    await withServer({ shelf: () => [], engines: () => [engine] }, async (base) => {
+      const res = await post(`${base}/v1/chat/completions`, JSON.stringify({ model: engine.identifier, messages: [], stream: true }));
+      await assert.rejects(res.text(), "the connection was cut before the end");
+    });
+  } finally {
+    failing.close();
+  }
+});
+
 test("an unknown model is refused, not swapped for another", async () => {
   const { server, engine } = await fakeEngine();
   try {

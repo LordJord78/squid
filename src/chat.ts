@@ -4,10 +4,10 @@
 import { createInterface } from "node:readline";
 import { ensureServer } from "./daemon.ts";
 import { contextLimit, dim, pickModel, type Message } from "./reply.ts";
-import { agentTurn, forgetThinking, startConversation } from "./agent.ts";
+import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
 import { relative } from "node:path";
 import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
-import { applyUndo, describeUndo, planUndo, undoNote } from "./undo.ts";
+import { applyUndo, describeUndo, planUndo, undoNote, withNote } from "./undo.ts";
 import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { readConfig } from "./config.ts";
@@ -108,7 +108,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
         process.stderr.write(dim(`Model: ${model ?? "your default model"}\n`));
       } else if (input.name === "undo") {
         const done = await undoLast(session, root, keyboard ? question : undefined);
-        if (done) pendingNote = done; // the model hears about it with your next message
+        pendingNote = withNote([pendingNote, done]); // the model hears about it with your next message
       } else if (input.name === "mode") {
         const wanted = input.arg.toLowerCase();
         if (MODES.includes(wanted as Mode)) session.mode = wanted as Mode;
@@ -122,23 +122,22 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
         process.stderr.write(dim(system ? `System: ${system}\n` : "No system instructions.\n"));
       } else process.stderr.write(dim(`Unknown command /${input.name}. /help lists them.\n`));
     } else if (input.kind === "say") {
-      forgetThinking(history);
-      const before = history.length;
-      const note = pendingNote;
-      history.push({ role: "user", content: note ? `${note}\n\n${input.text}` : input.text });
-      pendingNote = undefined;
       answering = new AbortController();
       try {
         // The agent loop adds the answer, plus any tool calls and their results, to the history.
-        const turn = await agentTurn(base, model, history, session, answering.signal);
-        model = turn.model;
-        used = turn.reply.usage?.total_tokens ?? used;
-        const limit = await contextLimit(base, model);
-        if (limit) process.stderr.write(dim(`${meter(used, limit)}${used / limit > 0.8 ? "  · nearly full: /clear starts fresh" : ""}\n`));
-      } catch (err) {
-        history.length = before; // the question wasn't answered: drop it, and any tool calls it started
-        pendingNote = note; // ...but the model still needs to hear about an undo, with the next message
-        process.stderr.write(answering.signal.aborted ? dim("\n(stopped; that message was left out of the conversation)\n") : `${(err as Error).message}\n`);
+        const turn = await takeTurn(base, model, history, input.text, pendingNote, session, answering.signal);
+        pendingNote = turn.note;
+        if (turn.error) {
+          const stopped = answering.signal.aborted; // Ctrl+C: said quietly, on a line of its own
+          const told = brokeOff(turn, stopped, (file) => relative(root, file) || file);
+          process.stderr.write(stopped ? dim(`\n${told}\n`) : `${told}\n`);
+        } else {
+          model = turn.model;
+          used = turn.reply?.usage?.total_tokens ?? used;
+          if (turn.paused) process.stderr.write(dim(`(paused after ${MAX_ROUNDS} rounds of tool calls without an answer; say "continue" to carry on)\n`));
+          const limit = model && (await contextLimit(base, model));
+          if (limit) process.stderr.write(dim(`${meter(used, limit)}${used / limit > 0.8 ? "  · nearly full: /clear starts fresh" : ""}\n`));
+        }
       } finally {
         answering = undefined;
       }

@@ -68,7 +68,10 @@ export function describeUndo(plan: UndoPlan, name: (file: string) => string, col
 // message. The checkpoint that message starts is still named after your own words, not the note.
 export const undoNote = (label: string, files: string[]) =>
   `(Squid: the user undid your changes from "${label}". These files are back as they were before: ${files.join(", ")}.)`;
-export const withoutNote = (text: string) => text.replace(/^\(Squid: the user undid [\s\S]*?\.\)\n\n/, "");
+// Squid's notes (this one, and the agent's "your last answer was interrupted") all start "(Squid: ";
+// there can be more than one in front of a message.
+export const withoutNote = (text: string) => text.replace(/^(\(Squid: [\s\S]*?\.\)\n\n)+/, "");
+export const withNote = (notes: (string | undefined)[]) => notes.filter(Boolean).join("\n\n") || undefined;
 
 // Puts the files back and removes the checkpoint. A file the agent created is deleted again.
 // `write` is the atomic writer from tools.ts, so a crash mid-undo can't leave half a file either.

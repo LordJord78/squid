@@ -140,9 +140,11 @@ test("closing the tab while a question is open counts as No and ends the turn; t
     tab.abort(); // the tab is gone
     for (let i = 0; i < 100 && (await (await p.call("/api/state")).json()).busy; i++) await new Promise((r) => setTimeout(r, 20));
     assert.equal(p.readme(), "The codename is Blue Heron.\n", "nobody clicked Yes");
-    assert.deepEqual((await (await p.call("/api/state")).json()).messages, [], "the unfinished turn was left out");
+    // Both rounds finished (a read, and an edit refused when the tab closed), so they're kept (step 18).
+    assert.deepEqual((await (await p.call("/api/state")).json()).messages, [{ role: "user", text: "Rename it." }], "the finished rounds were kept");
     const events = await p.say("Hi");
     assert.equal(p.fake.requests.length, 3, "nothing more was asked of the model after the tab closed");
+    assert.match(p.fake.requests[2].messages.at(-1).content, /^\(Squid: your last answer was interrupted: the user stopped it\.[\s\S]*\n\nHi$/);
     assert.ok(events.some((e) => e.type === "answer" && e.text === "Hello again."));
   } finally {
     p.close();
