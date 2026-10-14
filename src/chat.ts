@@ -31,6 +31,16 @@ export function meter(used: number, limit: number, width = 20): string {
   return `${"▓".repeat(filled)}${"░".repeat(width - filled)} ${used.toLocaleString("en-US")} / ${limit.toLocaleString("en-US")} tokens (${Math.round(share * 100)}%)`;
 }
 
+// The line after each answer: how full the memory is, and how fast the model wrote (step 20). A model that
+// suddenly writes at half its speed usually shares the GPU with something new: a game, a video, a browser.
+export function status(used: number, limit: number, compactAt: number, speed?: number, fastest = 0): string {
+  const parts = [meter(used, limit)];
+  if (used / limit > compactAt) parts.push("compacts before the next answer");
+  if (speed) parts.push(`${Math.round(speed)} tok/s`);
+  if (speed && speed < fastest / 2) parts.push(`slower than earlier (${Math.round(fastest)} tok/s): is another program using the GPU?`);
+  return parts.join("  · ");
+}
+
 const HELP = `/clear            forget the conversation and start a new one
 /model [name]     show or switch the model (it loads if needed)
 /mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab)
@@ -56,6 +66,7 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
   let system = options.system;
   let history: Message[] = startConversation(root, system); // [0] is the system message
   let used = 0; // tokens the conversation takes up, from the last reply's usage count
+  let fastest = 0; // the best tokens per second so far in this chat
   let answering: AbortController | undefined;
   let pendingNote: string | undefined; // told to the model with your next message (after an /undo)
 
@@ -149,7 +160,9 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
           used = turn.reply?.usage?.total_tokens ?? used;
           if (turn.paused) process.stderr.write(dim(`(paused after ${MAX_ROUNDS} rounds of tool calls without an answer; say "continue" to carry on)\n`));
           const limit = model && (await contextLimit(base, model));
-          if (limit) process.stderr.write(dim(`${meter(used, limit)}${used / limit > 0.8 ? "  · nearly full: /clear starts fresh" : ""}\n`));
+          const speed = turn.reply?.tokensPerSecond;
+          if (limit) process.stderr.write(dim(`${status(used, limit, session.compactAt, speed, fastest)}\n`));
+          fastest = Math.max(fastest, speed ?? 0);
         }
       } finally {
         answering = undefined;

@@ -44,8 +44,10 @@ export type Engine = {
   runtime?: Runtime; // which engine runs it; records written before step 17 have none: llama.cpp
 };
 
-export type LoadOptions = { contextLength?: number; parallel?: number; identifier?: string; jit?: boolean; ttlSeconds?: number; runtime?: Runtime };
-type Sizes = { contextLength?: number; parallel?: number };
+export type LoadOptions = Sizes & { identifier?: string; jit?: boolean; ttlSeconds?: number; runtime?: Runtime };
+// reasoningBudget (step 20): the most tokens the model may think per reply (-1: no limit). engineArgs:
+// more llama-server flags, passed as they are (for tuning experiments).
+type Sizes = { contextLength?: number; parallel?: number; reasoningBudget?: number; engineArgs?: string[] };
 
 // Settings LM Studio saved for a model when you tuned it there: flash attention, KV cache type, parallel slots.
 // Squid reads them so a model runs the same way in both. The 27B's file sets q4_0 cache and 1 slot.
@@ -76,13 +78,21 @@ export function lmstudioTuning(
 
 // Four layers, the later one wins: LM Studio's defaults (8,192-token context, 4 slots), LM Studio's
 // saved tuning for this model, Squid's config file (~/.squid/config.json), then what you typed.
-export function settingsFor(tuning: Tuning, configured: Sizes, typed: Sizes): Tuning & { contextLength: number; parallel: number } {
+export function settingsFor(tuning: Tuning, configured: Sizes, typed: Sizes): Tuning & { contextLength: number; parallel: number; reasoningBudget?: number; engineArgs: string[] } {
   return {
     ...tuning,
     contextLength: typed.contextLength ?? configured.contextLength ?? tuning.contextLength ?? 8192,
     parallel: typed.parallel ?? configured.parallel ?? tuning.parallel ?? 4,
+    ...((typed.reasoningBudget ?? configured.reasoningBudget) !== undefined && { reasoningBudget: typed.reasoningBudget ?? configured.reasoningBudget }),
+    engineArgs: [...(configured.engineArgs ?? []), ...(typed.engineArgs ?? [])],
   };
 }
+
+// Measured on the 27B (13 Oct): one agent reply thought for about 28,000 tokens (11 minutes at 41 tok/s)
+// before writing a file, and a 300-word story drew over 6,500 tokens of thinking. With a 1,024 budget it
+// still wrote working code and passing tests. 4,096 is about 100 seconds at full speed.
+export const THINKING_BUDGET = 4096;
+const THINKING_DONE = "\n\nI've thought about this enough. Time to act on it.\n";
 
 // The command line for llama-server.
 export function engineArgs(model: ShelfModel, identifier: string, port: number, apiKey: string, settings: ReturnType<typeof settingsFor>): string[] {
@@ -103,7 +113,11 @@ export function engineArgs(model: ShelfModel, identifier: string, port: number, 
   ];
   if (settings.kCacheType) args.push("--cache-type-k", settings.kCacheType);
   if (settings.vCacheType) args.push("--cache-type-v", settings.vCacheType);
-  return args;
+  // A thinking budget (step 20). When it's used up, llama.cpp ends the thinking with this message, so the
+  // model goes on to act rather than stopping mid-thought. -1 in the config means no limit.
+  const budget = settings.reasoningBudget ?? THINKING_BUDGET;
+  if (budget >= 0) args.push("--reasoning-budget", String(budget), "--reasoning-budget-message", THINKING_DONE);
+  return [...args, ...settings.engineArgs];
 }
 
 // Makes sure a model is loaded and returns its engine. If it's already loaded, or another Squid is

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { meter, parseLine } from "../src/chat.ts";
+import { meter, parseLine, status } from "../src/chat.ts";
 import { ENGINE, unload } from "../src/engine.ts";
 import { serverStatus, stopServer } from "../src/daemon.ts";
 import { tempDir } from "./helpers.ts";
@@ -20,6 +20,12 @@ test("the context meter draws how full the model's memory is", () => {
   assert.equal(meter(0, 49152), "░░░░░░░░░░░░░░░░░░░░ 0 / 49,152 tokens (0%)");
   assert.equal(meter(24576, 49152), "▓▓▓▓▓▓▓▓▓▓░░░░░░░░░░ 24,576 / 49,152 tokens (50%)");
   assert.equal(meter(60000, 49152), "▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓ 60,000 / 49,152 tokens (100%)", "never more than full");
+});
+
+test("after each answer: the meter, the speed, and a hint when the model slows to half its speed", () => {
+  assert.equal(status(4915, 49152, 0.65, 41.2, 0), `${meter(4915, 49152)}  · 41 tok/s`);
+  assert.match(status(40000, 49152, 0.65, 40, 41), /\(81%\)  · compacts before the next answer  · 40 tok\/s$/);
+  assert.match(status(4915, 49152, 0.65, 17, 41), /17 tok\/s  · slower than earlier \(41 tok\/s\): is another program using the GPU\?$/);
 });
 
 // A real conversation with the 9B, typed in through a pipe, one line per turn.

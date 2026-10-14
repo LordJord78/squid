@@ -73,6 +73,9 @@ export async function agentTurn(
       continue;
     }
     model = reply.model;
+    // Before its first word the engine reads whatever of the conversation it hasn't cached. Usually that's
+    // a moment; when it isn't, say so, so a long wait isn't a mystery (step 20).
+    if ((reply.secondsToFirstWord ?? 0) >= 5) out.note(dim(`(it read the conversation for ${Math.round(reply.secondsToFirstWord!)} s before starting)\n`));
     messages.push({
       role: "assistant",
       content: reply.content,

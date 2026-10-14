@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENGINE, engineArgs, lmstudioTuning, load, running, secondsLeft, settingsFor, unload, type Engine } from "../src/engine.ts";
+import { ENGINE, engineArgs, lmstudioTuning, load, running, secondsLeft, settingsFor, THINKING_BUDGET, unload, type Engine } from "../src/engine.ts";
 import { listModels, modelRoots, type ShelfModel } from "../src/models.ts";
 import { tempDir } from "./helpers.ts";
 
@@ -31,10 +31,22 @@ test("reads the tuning LM Studio saved for a model", () => {
 });
 
 test("settings: LM Studio's defaults, its saved tuning, Squid's config, then what you typed", () => {
-  assert.deepEqual(settingsFor({}, {}, {}), { contextLength: 8192, parallel: 4 });
-  assert.deepEqual(settingsFor({ parallel: 1, kCacheType: "q4_0" }, {}, {}), { parallel: 1, kCacheType: "q4_0", contextLength: 8192 });
-  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, {}), { parallel: 1, contextLength: 49152 }, "config file beats LM Studio");
-  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, { contextLength: 4096, parallel: 2 }), { parallel: 2, contextLength: 4096 }, "typed beats all");
+  assert.deepEqual(settingsFor({}, {}, {}), { contextLength: 8192, parallel: 4, engineArgs: [] });
+  assert.deepEqual(settingsFor({ parallel: 1, kCacheType: "q4_0" }, {}, {}), { parallel: 1, kCacheType: "q4_0", contextLength: 8192, engineArgs: [] });
+  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, {}), { parallel: 1, contextLength: 49152, engineArgs: [] }, "config file beats LM Studio");
+  assert.deepEqual(settingsFor({ parallel: 1 }, { contextLength: 49152 }, { contextLength: 4096, parallel: 2 }), { parallel: 2, contextLength: 4096, engineArgs: [] }, "typed beats all");
+  assert.deepEqual(settingsFor({}, { reasoningBudget: 8192, engineArgs: ["-cms", "2048"] }, { reasoningBudget: -1 }), { contextLength: 8192, parallel: 4, reasoningBudget: -1, engineArgs: ["-cms", "2048"] });
+});
+
+test("a thinking budget and extra flags reach llama-server's command line", () => {
+  const args = engineArgs(fakeModel("m.gguf"), "m", 50000, "k", settingsFor({}, { reasoningBudget: 8192, engineArgs: ["--checkpoint-min-step", "2048"] }, {}));
+  assert.equal(args[args.indexOf("--reasoning-budget") + 1], "8192");
+  assert.match(args[args.indexOf("--reasoning-budget-message") + 1], /Time to act/);
+  assert.deepEqual(args.slice(-2), ["--checkpoint-min-step", "2048"]);
+  const unlimited = engineArgs(fakeModel("m.gguf"), "m", 50000, "k", settingsFor({}, { reasoningBudget: -1 }, {}));
+  assert.ok(!unlimited.includes("--reasoning-budget"), "-1: no budget, llama.cpp's default");
+  const plain = engineArgs(fakeModel("m.gguf"), "m", 50000, "k", settingsFor({}, {}, {}));
+  assert.equal(plain[plain.indexOf("--reasoning-budget") + 1], String(THINKING_BUDGET), "unset: Squid's default budget");
 });
 
 test("the idle timer counts from the last answer", () => {
