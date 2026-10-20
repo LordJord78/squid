@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { SQUID_HOME } from "./config.ts";
 import { isAlive } from "./engine.ts";
 import { DEFAULT_PORT } from "./server.ts";
+import { checkArgs, forwardArgs, remoteSettings, runSsh, taskArgs, tunnelArgs, type Remote, type Ssh } from "./remote.ts";
 
 const STATE = join(SQUID_HOME, "server.json"); // { pid, port } of the running server
 export type ServerInfo = { pid: number; port: number };
@@ -49,6 +50,47 @@ export async function ensureServer(port = DEFAULT_PORT): Promise<ServerInfo> {
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
   throw new Error(`the server didn't start; see ${join(SQUID_HOME, "logs", "server.log")}`);
+}
+
+// The server chat, ask and web talk to: this machine's own, or in remote mode the PC's (step 22).
+export async function reachServer(): Promise<{ port: number; remote?: string }> {
+  const remote = remoteSettings();
+  return remote ? ensureRemoteServer(remote) : ensureServer();
+}
+
+// The PC's server, through the tunnel. Only what's missing is started: the tunnel if there's none, then
+// the PC's server if the tunnel leads nowhere. Chat calls this before every message, so the usual case,
+// both up, costs one local request and no SSH at all.
+export async function ensureRemoteServer(remote: Remote, ssh: Ssh = runSsh, patience = 30_000): Promise<{ port: number; remote: string }> {
+  const reached = { port: remote.localPort, remote: remote.ssh };
+  if (await answersLikeSquid(remote.localPort)) return reached;
+  if (ssh(checkArgs(remote)).status !== 0) {
+    rmSync(remote.socket, { force: true }); // nobody answers on it: left over from a tunnel that died
+    const opened = ssh(tunnelArgs(remote));
+    if (opened.status !== 0) throw new Error(`couldn't reach ${remote.ssh} over SSH: ${opened.stderr.trim() || `ssh ended with code ${opened.status}`}`);
+    if (await answersWithin(remote.localPort, 3_000)) return reached;
+  } else {
+    // A master is there, but maybe without the tunnel (made by some other ssh): add it.
+    ssh(forwardArgs(remote));
+    if (await answersWithin(remote.localPort, 3_000)) return reached;
+  }
+  // The tunnel is up, but nothing answers at its far end: start the PC's server. Through its scheduled
+  // task, not over SSH: on Windows a program started from an SSH session keeps that session open until
+  // it ends, and it runs elevated, where your own terminal on the PC can't stop it.
+  const started = ssh(taskArgs(remote));
+  if (started.status !== 0) {
+    throw new Error(`couldn't start Squid's server on ${remote.ssh}: ${started.stderr.trim()} (scripts/remote-setup.ps1 creates its task; run it there once)`);
+  }
+  if (await answersWithin(remote.localPort, patience)) return reached;
+  throw new Error(`Squid's server on ${remote.ssh} didn't answer; see ~/.squid/logs/server.log there`);
+}
+
+async function answersWithin(port: number, ms: number): Promise<boolean> {
+  for (let waited = 0; ; waited += 200) {
+    if (await answersLikeSquid(port)) return true;
+    if (waited >= ms) return false;
+    await new Promise((resolve) => setTimeout(resolve, 200));
+  }
 }
 
 export async function stopServer(): Promise<boolean> {

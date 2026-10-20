@@ -5,7 +5,8 @@ import { readGgufHeader, describeModel } from "./gguf.ts";
 import { listModels, type ShelfModel } from "./models.ts";
 import { load, loadOnDemand, running, secondsLeft, status, unload, type Engine, type Runtime } from "./engine.ts";
 import { startServer, DEFAULT_PORT } from "./server.ts";
-import { ensureServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
+import { ensureServer, reachServer, recordServer, serverStatus, stopServer } from "./daemon.ts";
+import { closeArgs, ON_THE_PC, remoteSettings, runOnPc, runSsh } from "./remote.ts";
 import { readConfig } from "./config.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { ask } from "./ask.ts";
@@ -41,7 +42,11 @@ const USAGE = `usage:
                             the API server (OpenAI-style) in the background, on 127.0.0.1:1235
   squid serve [--port N]    the same server in this window (Ctrl+C stops it)
   squid ask "<question>" [--model NAME] [--system TEXT] [--mode manual|auto|plan] [--stats]
-                            one question, answered as it's written`;
+                            one question, answered as it's written
+
+remote mode, with {"remote": {"ssh": "bld"}} in ~/.squid/config.json: the models run on that PC. chat, ask
+and web work here, on the folder you're in; ls, ps, info, tokenize, next and unload run on the PC.
+  squid win [command]       Squid on the PC itself, for the PC's own folders (chat if no command)`;
 
 // LM Studio shows sizes in decimal units (1 GB = 1,000,000,000 bytes), MB below 1 GB.
 const size = (bytes: number) => (bytes < 1e9 ? `${(bytes / 1e6).toFixed(2)} MB` : `${(bytes / 1e9).toFixed(2)} GB`);
@@ -123,8 +128,26 @@ function shelfTable(title: string, models: ShelfModel[]): string {
   return table([title, "PARAMS", "ARCH", "SIZE", "DEVICE"], rows);
 }
 
+// Remote mode (step 22): commands about the models run on the PC, where the models are.
+const remote = remoteSettings();
+if (remote && ON_THE_PC.has(command)) process.exit(runOnPc(remote, [command, ...args]));
+// `squid load` would start the engine from inside an SSH session, which on Windows holds the session
+// open and runs the engine elevated. The PC's server loads a model by itself when it's first asked for.
+const NO_REMOTE_LOAD = "in remote mode the PC's server loads a model when it's first used (its context length etc. come from the PC's ~/.squid/config.json)";
+
 switch (command) {
   case undefined: {
+    if (remote) {
+      // The PC's server through the tunnel; the model loads with the first message.
+      try {
+        await reachServer();
+      } catch (err) {
+        fail((err as Error).message);
+      }
+      console.log(`Squid's server on ${remote.ssh} is here on http://127.0.0.1:${remote.localPort}; your default model loads with the first message.`);
+      if (process.stdin.isTTY) await chat({});
+      break;
+    }
     // One word: the server in the background, then your default model, loaded the way a request would
     // load it, so it unloads itself after an hour unused.
     let server;
@@ -310,6 +333,7 @@ switch (command) {
       allowPositionals: true,
       options: { context: { type: "string" }, parallel: { type: "string" }, identifier: { type: "string" }, runtime: { type: "string" } },
     });
+    if (remote) fail(NO_REMOTE_LOAD);
     if (!positionals[0]) fail("usage: squid load <model> [--context N] [--parallel N] [--runtime squid]");
     if (values.runtime && values.runtime !== "squid" && values.runtime !== "llama.cpp") fail(`--runtime is "squid" or "llama.cpp", not "${values.runtime}"`);
     const model = pickModel(positionals[0]);
@@ -388,6 +412,18 @@ switch (command) {
   }
   case "server": {
     // Like `lms server start | stop | status`. "The server is not running." is LM Studio's wording.
+    if (remote && ["start", "stop", "status"].includes(args[0])) {
+      if (args[0] === "start") {
+        try {
+          await reachServer();
+        } catch (err) {
+          fail((err as Error).message);
+        }
+      }
+      process.exitCode = runOnPc(remote, ["server", args[0]]);
+      if (args[0] === "stop") runSsh(closeArgs(remote)); // and the tunnel with it
+      break;
+    }
     if (args[0] === "start") {
       try {
         console.log(`The server is running on port ${(await ensureServer()).port}.`);
@@ -402,6 +438,19 @@ switch (command) {
     } else {
       fail("usage: squid server start | stop | status");
     }
+    break;
+  }
+  case "win": {
+    // Squid on the PC, in its home folder: for working on the PC's own files. Its server is started here
+    // first, through the task, so nothing started over SSH has to keep running there.
+    if (!remote) fail(`squid win needs remote mode: {"remote": {"ssh": "<host>"}} in ~/.squid/config.json`);
+    if (args[0] === "load") fail(NO_REMOTE_LOAD);
+    try {
+      await reachServer();
+    } catch (err) {
+      fail((err as Error).message);
+    }
+    process.exitCode = runOnPc(remote, args.length ? args : ["chat"]);
     break;
   }
   default:

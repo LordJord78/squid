@@ -1,6 +1,6 @@
 // `squid ask "…"`: one question, with the answer printed as it's written, like `lms chat -p`.
 // Since step 08 the model can look around the folder first (see agent.ts).
-import { ensureServer } from "./daemon.ts";
+import { reachServer } from "./daemon.ts";
 import { agentTurn, startConversation } from "./agent.ts";
 import { createInterface } from "node:readline";
 import { dim, pickModel } from "./reply.ts";
@@ -12,7 +12,7 @@ export type AskOptions = { model?: string; system?: string; stats?: boolean; mod
 
 // With no model named, the server uses the one loaded, or loads your default model.
 export async function ask(prompt: string, options: AskOptions): Promise<void> {
-  const base = `http://127.0.0.1:${(await ensureServer()).port}`; // starts it in the background if needed
+  const base = `http://127.0.0.1:${(await reachServer()).port}`; // starts it in the background if needed
   // Text piped in (`cat notes.md | squid ask "Summarise this"`) comes along with the question, as
   // `lms chat -p` documents.
   const piped = process.stdin.isTTY ? "" : (await readStdin()).trim();

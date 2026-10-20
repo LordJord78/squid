@@ -2,7 +2,7 @@
 // The model remembers nothing between requests. Every message is sent together with the whole
 // conversation so far; that list of messages *is* the chat's memory.
 import { createInterface } from "node:readline";
-import { ensureServer } from "./daemon.ts";
+import { reachServer } from "./daemon.ts";
 import { contextLimit, dim, pickModel, terminal, type Message } from "./reply.ts";
 import { compact } from "./compact.ts";
 import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
@@ -62,7 +62,7 @@ const MODE_HELP: Record<Mode, string> = {
 export async function chat(options: { model?: string; system?: string; mode?: Mode }): Promise<void> {
   // Looked up again before each message: if the background server has stopped (closed, crashed, or
   // `squid server stop`), it is started again rather than leaving the chat stuck (step 21).
-  const server = async () => `http://127.0.0.1:${(await ensureServer()).port}`;
+  const server = async () => `http://127.0.0.1:${(await reachServer()).port}`;
   let base = await server();
   const root = process.cwd(); // the folder the model may look at: wherever you typed `squid`
   let model = options.model && (await pickModel(base, options.model)); // undefined: the server picks the loaded or default model

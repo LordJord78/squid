@@ -15,6 +15,9 @@ export type Config = {
   // reasoningBudget: the most tokens it may think per reply, -1 for no limit (step 20). engineArgs: more
   // llama-server flags, as they are.
   models?: Record<string, { contextLength?: number; parallel?: number; runtime?: "llama.cpp" | "squid"; reasoningBudget?: number; engineArgs?: string[] }>;
+  // Remote mode (step 22): use another PC's models, over SSH. {"remote": {"ssh": "bld"}}; port is Squid's
+  // port on that PC (1235), localPort the tunnel's end here (1236).
+  remote?: { ssh: string; port?: number; localPort?: number };
 };
 
 export function readConfig(file = join(SQUID_HOME, "config.json")): Config {
