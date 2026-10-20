@@ -86,3 +86,17 @@ test("the rulebook guards every tool: read, list and search", async () => {
   assert.equal(await run(root, call("search", { text: "blue heron" })), "notes.md:1: blue heron in the notes", "the other three are skipped");
   assert.match(await run(root, call("search", { text: "x", path: "data/es_holdout" })), /^Error: .*never opens/);
 });
+
+test("the project's rules still hold when its folder is opened through a link", async () => {
+  // On Windows, cd into a junction keeps the junction in the current folder's name, while Squid checks
+  // where each file really is: the rules have to be anchored at the real folder too.
+  const top = tempDir();
+  const project = join(top, "project");
+  mkdirSync(join(project, "docs", "private"), { recursive: true });
+  writeFileSync(join(project, "docs", "private", "diary.md"), "blue heron in the diary");
+  mkdirSync(join(project, ".squid"));
+  writeFileSync(join(project, ".squid", "settings.json"), JSON.stringify({ permissions: { deny: ["Read(docs/private/**)"] } }));
+  const link = join(top, "shortcut");
+  symlinkSync(project, link, "junction");
+  assert.match(await run(link, call("read_file", { path: "docs/private/diary.md" })), /^Error: .*denied by rule Read\(docs\/private\/\*\*\)/);
+});

@@ -70,7 +70,7 @@ test('"always" on an edit switches to auto mode; on a command, remembers exactly
 
 test('"always" is never offered for a shell', async () => {
   const you = approver({ ok: false });
-  await runTool(newSession(tempDir(), you.approve), call("run_command", { command: "cmd /c echo hi" }));
+  await runTool(newSession(tempDir(), you.approve), call("run_command", { command: process.platform === "win32" ? "cmd /c echo hi" : "sh -c 'echo hi'" }));
   assert.equal(you.asked[0].always, undefined);
 });
 

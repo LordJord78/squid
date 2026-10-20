@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { commandMatches, decide, loadRulebook, parseRule, posix, type Request, type Rulebook } from "../src/rules.ts";
+import { commandMatches, decide, IGNORE_CASE, loadRulebook, parseRule, posix, type Request, type Rulebook } from "../src/rules.ts";
 import { tempDir } from "./helpers.ts";
 
 const ROOT = "C:\\proj";
@@ -77,7 +77,7 @@ test("bare names match at any depth under the project; // and ~/ anchor elsewher
 });
 
 test("Windows paths are compared in POSIX form, ignoring case", () => {
-  assert.equal(posix("C:\\Users\\alice"), process.platform === "win32" ? "/c/users/alice" : "/c/Users/alice");
+  assert.equal(posix("C:\\Users\\alice"), IGNORE_CASE ? "/c/users/alice" : "/c/Users/alice");
   assert.equal(outcome(read(at("Secrets/Plan.TXT")), book({ deny: ["Read(secrets/**)"] })), "deny");
 });
 

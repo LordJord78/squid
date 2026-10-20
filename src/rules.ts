@@ -1,7 +1,7 @@
 // The rulebook: before any tool runs, Squid decides allow, ask or deny, the way Claude Code's permission
 // rules are documented to work. Rules look like `Read(./.env)`, `Edit(src/**)` or `Bash(npm run *)`.
 // Everything here is pure logic, so it's tested against the docs' own examples.
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { SQUID_HOME } from "./config.ts";
@@ -105,12 +105,14 @@ export function commandMatches(pattern: string, command: string): boolean {
 
 // --- Read and Edit rules: gitignore-style patterns over the full path ---
 // Windows paths are compared in POSIX form, as the docs say: C:\Users\alice → /c/Users/alice.
-// Squid also ignores upper/lower case on Windows, where .ENV and .env are the same file.
+// Squid also ignores upper/lower case on Windows and macOS, whose disks treat .ENV and .env as the
+// same file by default.
+export const IGNORE_CASE = process.platform === "win32" || process.platform === "darwin";
 export function posix(path: string): string {
   const slashed = path.replace(/\\/g, "/");
   const drive = /^([A-Za-z]):(\/|$)/.exec(slashed);
   const result = drive ? `/${drive[1].toLowerCase()}${slashed.slice(2)}` : slashed;
-  return process.platform === "win32" ? result.toLowerCase() : result;
+  return IGNORE_CASE ? result.toLowerCase() : result;
 }
 
 export function pathMatches(pattern: string, path: string, book: Rulebook, kind: Kind): boolean {
@@ -132,7 +134,7 @@ export function pathMatches(pattern: string, path: string, book: Rulebook, kind:
     const singleFolder = /^[^/]+\/\*\*$/.test(inner);
     anyDepth = (!pattern.startsWith("./") && !inner.includes("/")) || (singleFolder && kind !== "allow");
   }
-  if (process.platform === "win32") rest = rest.toLowerCase();
+  if (IGNORE_CASE) rest = rest.toLowerCase();
   // Matching a folder covers everything inside it, as in .gitignore: hence the optional "/…" at the end.
   const source = `^${escapeRegex(base)}${anyDepth ? "(?:/.*)?" : ""}${globToRegex(rest)}(?:/.*)?$`;
   // Compiled once and remembered: `search` asks about every file it visits.
@@ -175,6 +177,8 @@ export function loadRulebook(root: string, files = { user: join(SQUID_HOME, "con
   const user = read(files.user);
   const project = read(files.project);
   const list = (...lists: (string[] | undefined)[]) => lists.flatMap((l) => l ?? []).map(parseRule);
-  return { deny: list(user.deny, project.deny), ask: list(user.ask, project.ask), allow: list(user.allow), root };
+  // Anchored where the folder really is, like the paths it's checked against: on a Mac /var is a link to
+  // /private/var, and a rule anchored at the link's side would never match.
+  return { deny: list(user.deny, project.deny), ask: list(user.ask, project.ask), allow: list(user.allow), root: realpathSync.native(root) };
 }
 

@@ -1,7 +1,7 @@
 // Builds small GGUF files by hand for tests: just a header, no weights. And a scripted stand-in model.
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, realpathSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
@@ -31,7 +31,8 @@ export function ggufBytes(meta: Record<string, MetaValue>, padTo = 0): Buffer {
 }
 
 export function tempDir(): string {
-  return mkdtempSync(join(tmpdir(), "squid-"));
+  // The real path, as Squid gets from process.cwd(): on a Mac the temp folder sits behind a link (/var is /private/var).
+  return realpathSync.native(mkdtempSync(join(tmpdir(), "squid-")));
 }
 
 // A stand-in for Squid's server that follows a script: each chat request gets the next step, either a

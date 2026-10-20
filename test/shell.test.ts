@@ -1,11 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { isReadOnly, pathArguments, removesCriticalPath, resolveCommand, safeEnvironment, splitCommand, CommandError, type Command } from "../src/shell.ts";
 import { newSession, runTool, type Answer, type Approval, type Session } from "../src/tools.ts";
 import { parseRule } from "../src/rules.ts";
 import { tempDir } from "./helpers.ts";
+
+// The same checks on Windows and on a Mac, each with its own real programs and paths.
+const WINDOWS = process.platform === "win32";
+const SHELL_LINE = WINDOWS ? "cmd /c echo hi" : "sh -c 'echo hi'";
+const SHELL_NAME = WINDOWS ? "cmd" : "sh";
 
 test("a command line is split into words; quotes keep spaces; backslashes are just characters", () => {
   assert.deepEqual(splitCommand('git commit -m "fix the port"'), ["git", "commit", "-m", "fix the port"]);
@@ -24,10 +30,10 @@ test("shell syntax is refused: there's no shell to give it meaning", () => {
 test("the program is found on PATH, and rules see its plain name however it was typed", () => {
   const root = tempDir();
   const git = resolveCommand(["git", "status"], root);
-  assert.match(git.program, /git\.exe$/i);
+  assert.match(git.program, WINDOWS ? /git\.exe$/i : /\/git$/);
   assert.equal(git.text, "git status");
   const full = resolveCommand([git.program, "log", "-1"], root);
-  assert.equal(full.text, "git log -1", "a full path to git.exe is still git to the rules");
+  assert.equal(full.text, "git log -1", "a full path to git is still git to the rules");
   assert.throws(() => resolveCommand(["no-such-program-xyz"], root), /wasn't found on PATH/);
 });
 
@@ -37,22 +43,29 @@ test("npm runs through Node directly; other batch files are refused", () => {
   assert.equal(npm.program, process.execPath);
   assert.match(npm.args[0], /npm-cli\.js$/);
   assert.equal(npm.text, "npm --version");
-  writeFileSync(join(root, "build.cmd"), "@echo off\r\necho built\r\n");
-  assert.throws(() => resolveCommand([".\\build.cmd"], root), /batch file, which Windows can only run through cmd\.exe/);
+  if (WINDOWS) {
+    writeFileSync(join(root, "build.cmd"), "@echo off\r\necho built\r\n");
+    assert.throws(() => resolveCommand([".\\build.cmd"], root), /batch file, which Windows can only run through cmd\.exe/);
+  } else {
+    writeFileSync(join(root, "notes.txt"), "not a program");
+    assert.throws(() => resolveCommand(["./notes.txt"], root), /wasn't found/, "a file you may not execute isn't a program");
+  }
 });
 
 test("a bare name is never looked up in the project folder: a planted git.exe isn't run", () => {
   const root = tempDir();
-  copyFileSync(process.execPath, join(root, "git.exe")); // any real program, posing as git
+  const planted = join(root, WINDOWS ? "git.exe" : "git");
+  copyFileSync(process.execPath, planted); // any real program, posing as git
+  chmodSync(planted, 0o755);
   const git = resolveCommand(["git", "status"], root);
   assert.ok(!git.program.toLowerCase().startsWith(root.toLowerCase()), `ran ${git.program}`);
-  assert.match(resolveCommand([".\\git.exe", "status"], root).program, /git\.exe$/i, "typing a path to it is deliberate, and still needs your OK");
+  assert.equal(resolveCommand([WINDOWS ? ".\\git.exe" : "./git", "status"], root).program.toLowerCase(), planted.toLowerCase(), "typing a path to it is deliberate, and still needs your OK");
 });
 
 test("read-only means looking only, judged word by word", () => {
   const root = tempDir();
   const ro = (line: string) => isReadOnly(resolveCommand(splitCommand(line), root));
-  for (const line of ["git status", "git log --oneline -5", "git diff HEAD~1", "git rev-list --count HEAD", "git --version", "node --version", "npm --version", "where node"]) assert.ok(ro(line), line);
+  for (const line of ["git status", "git log --oneline -5", "git diff HEAD~1", "git rev-list --count HEAD", "git --version", "node --version", "npm --version", WINDOWS ? "where node" : "which node"]) assert.ok(ro(line), line);
   for (const line of ["git push", "git branch new-feature", "git -c core.fsmonitor=evil.exe status", "git -C .. status", "git diff --output=x.txt", "git log --ext-diff", "node -e 1", "npm test", "npm install"]) assert.ok(!ro(line), line);
 });
 
@@ -69,11 +82,12 @@ test("path arguments are found, with links followed; network paths are kept apar
 test("removing a drive, a top folder, home, or the project and its parents is never allowed", () => {
   const root = join(tempDir(), "project");
   const rm = (...args: string[]): Command => ({ program: "rm.exe", args, name: "rm", text: ["rm", ...args].join(" ") });
-  assert.ok(removesCriticalPath(rm("-rf", "C:\\"), root));
-  assert.ok(removesCriticalPath(rm("-rf", "C:\\Windows"), root));
+  const [top, under] = WINDOWS ? ["C:\\", "C:\\Windows"] : ["/", "/usr"];
+  assert.ok(removesCriticalPath(rm("-rf", top), root));
+  assert.ok(removesCriticalPath(rm("-rf", under), root));
   assert.ok(removesCriticalPath(rm("-rf", "."), root), "the project folder itself");
   assert.ok(removesCriticalPath(rm("-rf", ".."), root), "its parent");
-  assert.ok(removesCriticalPath(rm("-r", process.env.USERPROFILE!), root));
+  assert.ok(removesCriticalPath(rm("-r", homedir()), root));
   assert.equal(removesCriticalPath(rm("-rf", "build"), root), undefined, "a folder inside the project is an ordinary request");
 });
 
@@ -112,7 +126,7 @@ test("anything else asks first, showing which program will really run", async ()
   delete process.env.SQUID_TEST_SECRET_TOKEN;
   assert.equal(result, "exit code 0\nnot passed on");
   assert.equal(you.asked[0].title, `Run node -e "console.log(process.env.SQUID_TEST_SECRET_TOKEN ?? 'not passed on')"`);
-  assert.match(you.asked[0].preview, /\(program: .*node\.exe\)/i);
+  assert.match(you.asked[0].preview, WINDOWS ? /\(program: .*node\.exe\)/i : /\(program: .*\/node\)/);
   assert.equal(await run(session, "node -e 1"), "Error: the user declined: Run node -e 1. Their instructions: use npm test instead");
 });
 
@@ -131,11 +145,24 @@ test("shells always ask, even under an allow-everything rule; a deny rule refuse
   const you = approver({ ok: false });
   const session = newSession(root, you.approve);
   session.book = { ...session.book, allow: [parseRule("Bash")] };
-  assert.match(await run(session, "cmd /c echo hi"), /declined/);
-  assert.match(you.asked[0].reason, /cmd is a shell: it can run anything/);
+  assert.match(await run(session, SHELL_LINE), /declined/);
+  assert.match(you.asked[0].reason, new RegExp(`${SHELL_NAME} is a shell: it can run anything`));
   session.book = { ...session.book, deny: [parseRule("Bash(curl *)")] };
-  assert.match(await run(session, "C:\\Windows\\System32\\curl.exe --version"), /denied by rule Bash\(curl \*\)/, "curl by its full path is still curl");
+  assert.match(await run(session, `${WINDOWS ? "C:\\Windows\\System32\\curl.exe" : "/usr/bin/curl"} --version`), /denied by rule Bash\(curl \*\)/, "curl by its full path is still curl");
   assert.equal(you.asked.length, 1);
+});
+
+test("on a Mac, a path is not an option, and programs that start other programs count as shells", { skip: WINDOWS && "Windows options start with /" }, async () => {
+  const root = join(tempDir(), "project");
+  const rm = (...args: string[]): Command => ({ program: "/bin/rm", args, name: "rm", text: ["rm", ...args].join(" ") });
+  assert.equal(removesCriticalPath(rm("-rf", "/"), root), "/", "rm -rf / is caught, not skipped as an option");
+  assert.ok(removesCriticalPath(rm("-rf", homedir()), root));
+  const you = approver({ ok: false });
+  const session = newSession(tempDir(), you.approve);
+  session.book = { ...session.book, allow: [parseRule("Bash")] };
+  assert.match(await run(session, "sudo -n true"), /declined/, "sudo always asks");
+  assert.match(you.asked[0].reason, /sudo is a shell: it can run anything/);
+  assert.equal(you.asked[0].always, undefined);
 });
 
 test("paths in a command follow the rulebook: secrets refused, outside paths asked about", async () => {

@@ -4,9 +4,11 @@
 // and its arguments and starts that one program directly. Shell syntax then has no meaning, and Squid
 // refuses it outright rather than pass "&&" to a program as a plain word.
 import { spawn, execFileSync } from "node:child_process";
-import { existsSync, realpathSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, realpathSync, statSync } from "node:fs";
 import { basename, delimiter, dirname, extname, join, parse, resolve, sep } from "node:path";
 import { homedir } from "node:os";
+
+const WINDOWS = process.platform === "win32";
 
 export type Command = {
   program: string; // the file that will run, e.g. C:\Program Files\Git\cmd\git.exe
@@ -56,20 +58,23 @@ export function splitCommand(line: string): string[] {
 // --- 2. finding the program ---
 
 // Programs that run whatever you hand them. Starting one is starting a shell again, so they always need
-// your OK, and no allow rule can skip that (as Claude Code treats exec wrappers like `watch`).
-const SHELLS = new Set(["cmd", "powershell", "pwsh", "bash", "sh", "zsh", "wsl", "wscript", "cscript", "mshta", "rundll32", "start"]);
+// your OK, and no allow rule can skip that (as Claude Code treats exec wrappers like `watch`). The second
+// line is a Mac's: its shells, and programs that start the program named after them (`sudo rm …`).
+const SHELLS = new Set(["cmd", "powershell", "pwsh", "bash", "sh", "zsh", "wsl", "wscript", "cscript", "mshta", "rundll32", "start",
+  "dash", "ksh", "csh", "tcsh", "fish", "osascript", "sudo", "env", "xargs", "nohup", "nice", "time", "timeout", "watch"]);
 export const isShell = (command: Command) => SHELLS.has(command.name);
 
 // npm and npx are batch files on Windows (npm.cmd), which can only run through cmd.exe. They're really
-// Node scripts, so Squid runs those scripts with Node directly.
+// Node scripts, so Squid runs those scripts with Node directly, on a Mac too, so rules see them the same.
 function nodeScript(name: string): string | undefined {
   if (name !== "npm" && name !== "npx") return undefined;
-  const script = join(dirname(process.execPath), "node_modules", "npm", "bin", `${name}-cli.js`);
+  const modules = WINDOWS ? join(dirname(process.execPath), "node_modules") : join(dirname(process.execPath), "..", "lib", "node_modules");
+  const script = join(modules, "npm", "bin", `${name}-cli.js`);
   return existsSync(script) ? script : undefined;
 }
 
 // Turns the typed words into the program that will really run. Looks through PATH the way Windows does,
-// but runs only real programs (.exe, .com).
+// but runs only real programs (.exe, .com). On a Mac a program is any file you may execute.
 export function resolveCommand(words: string[], root: string): Command {
   const [typed, ...rest] = words;
   const script = nodeScript(typed.toLowerCase());
@@ -80,36 +85,38 @@ export function resolveCommand(words: string[], root: string): Command {
     args = [script, ...rest];
   } else {
     program = findProgram(typed, root);
-    const extension = extname(program).toLowerCase();
+    const extension = WINDOWS ? extname(program).toLowerCase() : "";
     if (extension === ".bat" || extension === ".cmd") {
       // Windows can only run a batch file by handing the whole line to cmd.exe, which reads the arguments
       // again with its own rules: a crafted argument can then run another command ("BatBadBut",
       // CVE-2024-27980). Node refuses to do it without a shell since 2024, and so does Squid.
       throw new CommandError(`${basename(program)} is a batch file, which Windows can only run through cmd.exe; Squid doesn't start shells`);
     }
-    if (extension !== ".exe" && extension !== ".com") throw new CommandError(`${basename(program)} isn't a program Squid can run (only .exe and .com)`);
+    if (WINDOWS && extension !== ".exe" && extension !== ".com") throw new CommandError(`${basename(program)} isn't a program Squid can run (only .exe and .com)`);
   }
-  const name = (script ? typed : parse(program).name).toLowerCase();
+  // git.exe is "git" to the rules; on a Mac the file name is the name (python3.12 keeps its dots).
+  const name = (script ? typed : WINDOWS ? parse(program).name : basename(program)).toLowerCase();
   return { program, args, name, text: [name, ...rest].map(quoteIfNeeded).join(" ") };
 }
 
 function findProgram(typed: string, root: string): string {
   const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
-  const candidates = (base: string) => (extname(base) ? [base] : extensions.map((ext) => base + ext.toLowerCase()));
+  const candidates = (base: string) => (!WINDOWS || extname(base) ? [base] : extensions.map((ext) => base + ext.toLowerCase()));
   if (typed.includes("/") || typed.includes("\\")) {
     // A path: relative ones start from the project folder.
-    for (const file of candidates(resolve(root, typed))) if (isFile(file)) return file;
+    for (const file of candidates(resolve(root, typed))) if (isProgram(file)) return file;
     throw new CommandError(`${typed} wasn't found`);
   }
   // Only PATH, never the current folder first. cmd.exe does look there first, so a downloaded project
   // that ships its own git.exe would have it run by a plain `git status`.
   for (const dir of (process.env.PATH ?? "").split(delimiter).filter(Boolean)) {
-    for (const file of candidates(join(dir, typed))) if (isFile(file)) return file;
+    for (const file of candidates(join(dir, typed))) if (isProgram(file)) return file;
   }
   throw new CommandError(`${typed} wasn't found on PATH`);
 }
-const isFile = (path: string) => {
+const isProgram = (path: string) => {
   try {
+    if (!WINDOWS) accessSync(path, constants.X_OK); // on a Mac, only a file you may execute
     return statSync(path).isFile();
   } catch {
     return false;
@@ -120,7 +127,8 @@ const quoteIfNeeded = (word: string) => (/[\s"]/.test(word) || word === "" ? `"$
 // --- 3. what's read-only ---
 
 // Commands that only look, run without asking (Claude Code has a similar built-in set). Squid's set is
-// small: Windows has no ls or cat programs, and the file tools already read, list and search.
+// small: Windows has no ls or cat programs, and the file tools already read, list and search. `which`
+// is a Mac's `where`.
 // For git only the subcommand as the very first word counts: `git -c core.fsmonitor=<program> status`
 // would run a program, so a global option in front makes it not read-only.
 const READ_ONLY_GIT = new Set(["status", "diff", "log", "show", "blame", "ls-files", "rev-parse", "rev-list"]);
@@ -136,6 +144,7 @@ export function isReadOnly(command: Command): boolean {
   if (["node", "npm", "npx", "python", "py", "uv", "deno", "bun", "tsc"].includes(command.name)) {
     return command.args.length === (command.name === "npm" || command.name === "npx" ? 2 : 1) && VERSION.has(command.args.at(-1)!); // npm's args start with its script
   }
+  if (command.name === "which") return command.args.length > 0 && command.args.every((arg) => !arg.startsWith("-"));
   return command.name === "where" && command.args.length > 0 && command.args.every((arg) => !arg.startsWith("/"));
 }
 
@@ -168,14 +177,15 @@ export function removesCriticalPath(command: Command, root: string): string | un
     if (dirname(dir) === dir) break; // reached the drive root
   }
   for (const arg of command.args) {
-    if (arg.startsWith("-") || arg.startsWith("/")) continue; // options
+    if (arg.startsWith("-") || (WINDOWS && arg.startsWith("/"))) continue; // options (on a Mac, /… is a path: rm -rf /)
     const target = normal(resolve(root, arg));
     const depth = target.split(sep).filter(Boolean).length; // "c:" = 1, "c:\windows" = 2
     if (critical.has(target) || depth <= 2) return target;
   }
   return undefined;
 }
-const normal = (path: string) => resolve(path).replace(/[\\/]+$/, "").toLowerCase();
+// Without a trailing slash, except a Mac's top folder: "/" stays "/" (stripped, it would be "", which reads as "nothing").
+const normal = (path: string) => resolve(path).replace(/(?<=.)[\\/]+$/, "").toLowerCase();
 
 // --- 5. running it ---
 
@@ -191,10 +201,11 @@ export function safeEnvironment(): NodeJS.ProcessEnv {
 export type Ran = { code: number | null; stdout: string; stderr: string; timedOut: boolean; cancelled: boolean };
 
 // Starts the program (shell: false is the whole point), collects its output, and stops it after
-// `seconds`. On Windows a killed program's own child processes keep running, so the whole tree is ended.
+// `seconds`. A killed program's own child processes keep running, so the whole tree is ended: taskkill /T
+// on Windows; on a Mac the program leads its own process group (detached), and the group is ended.
 export function runCommand(command: Command, cwd: string, seconds: number, signal?: AbortSignal): Promise<Ran> {
   return new Promise((done) => {
-    const child = spawn(command.program, command.args, { cwd, shell: false, windowsHide: true, env: safeEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(command.program, command.args, { cwd, shell: false, windowsHide: true, detached: !WINDOWS, env: safeEnvironment(), stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     const keep = (text: string, more: Buffer) => (text.length < 200_000 ? text + more.toString("utf8") : text);
@@ -204,7 +215,8 @@ export function runCommand(command: Command, cwd: string, seconds: number, signa
     let cancelled = false;
     const stopTree = () => {
       try {
-        execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        if (WINDOWS) execFileSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" });
+        else process.kill(-child.pid!, "SIGKILL");
       } catch {
         child.kill();
       }
@@ -237,5 +249,5 @@ export function describeRun(ran: Ran, seconds: number): string {
 export const insideFolder = (root: string, path: string) => {
   const base = normal(root);
   const target = normal(path);
-  return target === base || target.startsWith(base + sep);
+  return target === base || target.startsWith(base.endsWith(sep) ? base : base + sep);
 };
