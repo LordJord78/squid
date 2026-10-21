@@ -138,13 +138,35 @@ const NO_REMOTE_LOAD = "in remote mode the PC's server loads a model when it's f
 switch (command) {
   case undefined: {
     if (remote) {
-      // The PC's server through the tunnel; the model loads with the first message.
+      // The PC's server through the tunnel, then its default model, loaded by a one-token request the
+      // way your first message would load it, but with the wait shown: from the PC's USB drive a cold
+      // load takes about 1.5 minutes, and a chat that just sits there looks broken.
+      let base;
       try {
-        await reachServer();
+        base = `http://127.0.0.1:${(await reachServer()).port}`;
       } catch (err) {
         fail((err as Error).message);
       }
-      console.log(`Squid's server on ${remote.ssh} is here on http://127.0.0.1:${remote.localPort}; your default model loads with the first message.`);
+      const progress = counter(`Loading your default model on ${remote.ssh}`);
+      const started = Date.now();
+      const timer = setInterval(() => progress.tick((Date.now() - started) / 1000), 1000);
+      let ready;
+      try {
+        const res = await fetch(`${base}/v1/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "." }], max_tokens: 1 }),
+        });
+        ready = (await res.json()) as { model?: string; error?: string };
+        if (!res.ok || ready.error) throw new Error(ready.error ?? `the PC's server answered ${res.status}`);
+      } catch (err) {
+        clearInterval(timer);
+        progress.clear();
+        fail((err as Error).message);
+      }
+      clearInterval(timer);
+      progress.clear();
+      console.log(`${ready.model ?? "Your default model"} is ready on ${remote.ssh} (${Math.round((Date.now() - started) / 1000)} s).`);
       if (process.stdin.isTTY) await chat({});
       break;
     }
