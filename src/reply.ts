@@ -1,5 +1,6 @@
 // The client side of a chat request: send the conversation, show the reply as it streams in, and
 // return all of it. Used by `squid ask`, the chat, and the agent loop.
+import { request, type IncomingMessage } from "node:http";
 import { sseData } from "./sse.ts";
 import type { ToolCall } from "./tools.ts";
 
@@ -56,17 +57,12 @@ export async function streamReply(
   out: Output = terminal,
 ): Promise<Reply> {
   const started = performance.now();
-  const res = await fetch(`${base}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, stream: true, stream_options: { include_usage: true } }),
-    signal,
-  }).catch((err) => {
+  const res = await post(`${base}/v1/chat/completions`, { ...body, stream: true, stream_options: { include_usage: true } }, signal).catch((err) => {
     if (signal?.aborted) throw err;
     throw new CutOff("broken"); // the connection broke before the answer began
   });
-  if (!res.ok) {
-    const refusal = await res.json();
+  if (res.statusCode !== 200) {
+    const refusal = JSON.parse(await readAll(res));
     // llama.cpp refuses a conversation that no longer fits: {"error": {"type": "exceed_context_size_error", ...}}
     if (refusal.error?.type === "exceed_context_size_error") throw new CutOff("memory full", "The conversation no longer fits in the model's memory (its context).");
     throw new Error(errorText(refusal));
@@ -76,7 +72,7 @@ export async function streamReply(
   let firstWord: number | undefined;
   let thinking = false;
   try {
-    for await (const data of sseData(res.body!)) {
+    for await (const data of sseData(res)) {
       if (data === "[DONE]") break;
       const chunk = JSON.parse(data);
       reply.model = chunk.model; // which model answered (the server may have picked it)
@@ -122,6 +118,24 @@ export async function streamReply(
     if (reply.usage) reply.tokensPerSecond = reply.usage.completion_tokens / ((performance.now() - firstWord) / 1000);
   }
   return reply;
+}
+
+// Sends a request and resolves as soon as the reply starts arriving. node:http rather than fetch, as in
+// Squid's server: fetch gives up when no reply has started after 5 minutes, and a big model can take longer
+// than that to read a long prompt (Flash-Next on the PC, 22 Oct: an 8,330-token prompt, cut off at 300 s).
+function post(url: string, body: unknown, signal?: AbortSignal): Promise<IncomingMessage> {
+  return new Promise((resolve, reject) => {
+    const outgoing = request(url, { method: "POST", headers: { "Content-Type": "application/json" }, signal }, resolve);
+    outgoing.on("error", reject);
+    outgoing.end(JSON.stringify(body));
+  });
+}
+
+async function readAll(res: IncomingMessage): Promise<string> {
+  res.setEncoding("utf8");
+  let text = "";
+  for await (const chunk of res) text += chunk;
+  return text;
 }
 
 // An exact model name, or the one whose name contains what was typed (as `squid load` accepts): `--model

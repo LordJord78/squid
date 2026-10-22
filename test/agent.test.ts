@@ -5,7 +5,7 @@ import { execFileSync } from "node:child_process";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { agentTurn, brokeOff, finishedLength, forgetThinking, interruptedNote, MAX_ROUNDS, startConversation, takeTurn } from "../src/agent.ts";
-import { CutOff, type Message, type Output } from "../src/reply.ts";
+import { CutOff, streamReply, type Message, type Output } from "../src/reply.ts";
 import { withoutNote } from "../src/undo.ts";
 import { startServer } from "../src/server.ts";
 import { newSession, type Approval } from "../src/tools.ts";
@@ -81,6 +81,22 @@ test("a tool call cut off by a full memory is never run", async () => {
     } finally {
       fake.close();
     }
+  }
+});
+
+test("an answer that's slow to start is waited for: the request doesn't go through fetch, which gives up at 5 minutes", async () => {
+  // Flash-Next on the PC (22 Oct) took over 5 minutes to read an 8K-token prompt before its first word, and
+  // the chat hung up at 300 s twice ("the answer was cut off"): fetch's limit for a reply to start.
+  const fake = await scriptedServer([{ say: "Here it is." }]);
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = () => Promise.reject(new Error("fetch was used"));
+  try {
+    const reply = await streamReply(fake.base, { messages: [{ role: "user", content: "hi" }] }, undefined, collector().out);
+    assert.equal(reply.content, "Here it is.");
+    assert.equal(reply.finishReason, "stop");
+  } finally {
+    globalThis.fetch = realFetch;
+    fake.close();
   }
 });
 
