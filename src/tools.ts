@@ -48,7 +48,8 @@ export class ToolError extends Error {}
 
 // What you're asked to approve, and your answer: yes, or no with optional instructions for the model.
 // `always` describes what a third answer, "yes, and don't ask again", would do; absent, it isn't offered.
-export type Approval = { title: string; reason: string; preview: string; always?: string };
+// `switchesToAuto`: that answer switches to auto mode, so Shift+Tab gives it (Claude Code's edit prompt).
+export type Approval = { title: string; reason: string; preview: string; always?: string; switchesToAuto?: boolean };
 export type Answer = { ok: boolean; feedback?: string; always?: boolean };
 export type Approver = (request: Approval) => Promise<Answer>;
 // With nobody at the keyboard (input piped in, a script), anything that needs approval is refused.
@@ -166,7 +167,7 @@ async function permit(session: Session, tool: "Read" | "Edit", requested: string
   }
   // For an edit, "don't ask again" means switching to auto mode, as Claude Code's edit prompt offers.
   const always = tool === "Edit" && session.mode === "manual" ? "yes, and switch to auto mode: no more questions for edits in this folder" : undefined;
-  const answer = await session.approve({ title, reason: verdict.reason, preview, always });
+  const answer = await session.approve({ title, reason: verdict.reason, preview, always, ...(always && { switchesToAuto: true }) });
   if (!answer.ok) throw new ToolError(`the user declined: ${title}${answer.feedback ? `. Their instructions: ${answer.feedback}` : ""}`);
   if (answer.always && always) {
     session.mode = "auto";

@@ -2,9 +2,12 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
+import { PassThrough } from "node:stream";
 import { decide, parseRule, type Request, type Rulebook } from "../src/rules.ts";
 import { newSession, runTool, toolsFor, type Answer, type Approval, type PlanChoice } from "../src/tools.ts";
 import { nextMode, promptFor } from "../src/chat.ts";
+import { keyboardApprover, keyboardPlanChooser, questionOn, type OpenQuestion } from "../src/approve.ts";
 import { tempDir } from "./helpers.ts";
 
 const book = (allow: string[] = []): Rulebook => ({ deny: [], ask: [], allow: allow.map(parseRule), root: "C:\\proj", home: "C:\\Users\\alice" });
@@ -29,6 +32,38 @@ test("Shift+Tab cycles manual → auto → plan → manual, and the prompt alway
   assert.deepEqual([nextMode("manual"), nextMode("auto"), nextMode("plan")], ["auto", "plan", "manual"]);
   const plain = (text: string) => text.replace(/\x1b\[\d+m/g, "");
   assert.deepEqual([plain(promptFor("manual")), plain(promptFor("auto")), plain(promptFor("plan"))], ["› ", "⏵⏵ auto › ", "⏸ plan › "]);
+});
+
+test("at a question, Shift+Tab gives Claude Code's answer: an edit's yes-and-auto, a plan's go-ahead-in-auto; a command has none", async () => {
+  const asked: { prompt: string; shiftTab?: string }[] = [];
+  const question = async (prompt: string, shiftTab?: string) => (asked.push({ prompt, shiftTab }), "n");
+  const approve = keyboardApprover(question);
+  await approve({ title: "Edit a.txt", reason: "edits ask", preview: "", always: "yes, and switch to auto mode", switchesToAuto: true });
+  await approve({ title: "Run npm test", reason: "commands ask", preview: "", always: 'yes, and don\'t ask again for exactly "npm test" this session' });
+  await keyboardPlanChooser(question)("1. do it");
+  assert.deepEqual(asked.map((a) => a.shiftTab), ["a", undefined, "1"]);
+  assert.match(asked[0].prompt, /Shift\+Tab/);
+  assert.doesNotMatch(asked[1].prompt, /Shift\+Tab/);
+  assert.match(asked[2].prompt, /Shift\+Tab/);
+});
+
+test("a question answered by Shift+Tab is closed: the next line you type goes to the chat", async () => {
+  const input = new PassThrough();
+  const rl = createInterface({ input, output: new PassThrough(), terminal: false });
+  let open: OpenQuestion | undefined;
+  const question = questionOn(rl, (o) => (open = o));
+  const current = () => open; // read fresh each time: the question sets it
+  const answer = question("Allow? ", "a");
+  assert.ok(current()?.shiftTab, "this question has a Shift+Tab answer");
+  current()!.shiftTab!();
+  assert.equal(await answer, "a");
+  assert.equal(current(), undefined, "no question is open any more");
+  const line = new Promise((resolve) => rl.once("line", resolve));
+  input.write("hello\n");
+  assert.equal(await line, "hello");
+  void question("Allow? "); // and one without a Shift+Tab answer has none to give
+  assert.equal(current()?.shiftTab, undefined);
+  rl.close();
 });
 
 function approver(...answers: Answer[]) {
@@ -58,10 +93,12 @@ test('"always" on an edit switches to auto mode; on a command, remembers exactly
   await runTool(session, call("edit_file", { path: "a.txt", old_text: "one", new_text: "two" }));
   assert.equal(session.mode, "auto");
   assert.match(you.asked[0].always!, /switch to auto mode/);
+  assert.equal(you.asked[0].switchesToAuto, true, "so Shift+Tab gives that answer");
   await runTool(session, call("edit_file", { path: "a.txt", old_text: "two", new_text: "three" }));
   assert.equal(you.asked.length, 1, "no question for the second edit");
 
   await runTool(session, call("run_command", { command: "node -e 1" })); // asked, answered "always"
+  assert.equal(you.asked[1].switchesToAuto, undefined, "a command's always doesn't change the mode");
   await runTool(session, call("run_command", { command: "node -e 1" })); // remembered: not asked
   assert.equal(you.asked.length, 2);
   assert.match(await runTool(session, call("run_command", { command: "node -e 2" })), /declined/, "a different command asks again");

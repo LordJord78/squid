@@ -4,7 +4,8 @@ import type { Interface } from "node:readline";
 import { dim } from "./reply.ts";
 import type { Answer, Approver, PlanChoice, PlanChooser } from "./tools.ts";
 
-type Question = (prompt: string) => Promise<string | undefined>;
+// A question asks for a typed line. Some also have a Shift+Tab answer, as in Claude Code.
+type Question = (prompt: string, shiftTab?: string) => Promise<string | undefined>;
 const framed = (text: string) => (text ? `\n${text.split("\n").map((line) => `│ ${line}`).join("\n")}` : "");
 
 // What an answer means: y, a (if "always" was offered), n, or anything else = instructions for the model.
@@ -27,11 +28,11 @@ export function planChoiceFrom(typed: string | undefined): PlanChoice {
 // `question` shows a prompt and resolves with the line you type, or undefined if there's no answer
 // (the input closed, or Ctrl+C).
 export function keyboardApprover(question: Question): Approver {
-  return async ({ title, reason, preview, always }) => {
+  return async ({ title, reason, preview, always, switchesToAuto }) => {
     process.stderr.write(`\n┌ ${title}  ${dim(`(${reason})`)}${framed(preview)}\n`);
     if (always) process.stderr.write(dim(`│ a = ${always}\n`));
-    const choices = always ? "y = yes · a = always · n = no" : "y = yes · n = no";
-    return answerFrom(await question(`└ Allow? ${choices} · or type what to do instead › `), Boolean(always));
+    const choices = always ? `y = yes · a${switchesToAuto ? " or Shift+Tab" : ""} = always · n = no` : "y = yes · n = no";
+    return answerFrom(await question(`└ Allow? ${choices} · or type what to do instead › `, switchesToAuto ? "a" : undefined), Boolean(always));
   };
 }
 
@@ -39,26 +40,31 @@ export function keyboardApprover(question: Question): Approver {
 export function keyboardPlanChooser(question: Question): PlanChooser {
   return async (plan) => {
     process.stderr.write(`\n┌ Plan  ${dim("(nothing has been changed yet)")}${framed(plan)}\n`);
-    return planChoiceFrom(await question("└ 1 = go ahead in auto mode · 2 = go ahead, asking before each change · or type what to change › "));
+    return planChoiceFrom(await question("└ 1 or Shift+Tab = go ahead in auto mode · 2 = go ahead, asking before each change · or type what to change › ", "1"));
   };
 }
 
 // A question on an existing readline (the chat's), cancelled by Ctrl+C. Node gives the next typed line
 // to a pending question instead of to the chat loop, so the answer doesn't become a chat message.
-// `onCancel` receives a cancel function while the question is open, and undefined once it's answered.
-export function questionOn(rl: Interface, onCancel: (cancel: (() => void) | undefined) => void): Question {
-  return (prompt) =>
+// `onOpen` receives the open question while there is one (Ctrl+C cancels it; Shift+Tab gives its Shift+Tab
+// answer, if it has one), and undefined once it's answered.
+export type OpenQuestion = { cancel: () => void; shiftTab?: () => void };
+export function questionOn(rl: Interface, onOpen: (open: OpenQuestion | undefined) => void): Question {
+  return (prompt, shiftTab) =>
     new Promise((resolve) => {
       const stop = new AbortController();
+      let given: string | undefined; // the Shift+Tab answer, once pressed
       const done = (answer: string | undefined) => {
         rl.off("close", closed);
-        onCancel(undefined);
+        onOpen(undefined);
         resolve(answer);
       };
       const closed = () => done(undefined);
       rl.once("close", closed);
-      onCancel(() => stop.abort()); // the chat's Ctrl+C handler calls this while the question is open
-      stop.signal.addEventListener("abort", () => done(undefined));
+      // Both end the question through its signal, so Node stops waiting for its line: the next line you
+      // type goes to the chat again.
+      onOpen({ cancel: () => stop.abort(), shiftTab: shiftTab === undefined ? undefined : () => ((given = shiftTab), stop.abort()) });
+      stop.signal.addEventListener("abort", () => done(given));
       rl.question(prompt, { signal: stop.signal }, done);
     });
 }

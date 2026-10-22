@@ -9,7 +9,7 @@ import { brokeOff, MAX_ROUNDS, startConversation, takeTurn } from "./agent.ts";
 import { relative } from "node:path";
 import { newSession, nobodyToAsk, writeAtomically, type Session } from "./tools.ts";
 import { applyUndo, describeUndo, planUndo, undoNote, withNote } from "./undo.ts";
-import { keyboardApprover, keyboardPlanChooser, questionOn } from "./approve.ts";
+import { keyboardApprover, keyboardPlanChooser, questionOn, type OpenQuestion } from "./approve.ts";
 import { MODES, type Mode } from "./rules.ts";
 import { readConfig } from "./config.ts";
 
@@ -43,7 +43,7 @@ export function status(used: number, limit: number, compactAt: number, speed?: n
 
 const HELP = `/clear            forget the conversation and start a new one
 /model [name]     show or switch the model (it loads if needed)
-/mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab)
+/mode [name]      show or switch the mode: manual, auto or plan (or press Shift+Tab, at any time)
 /system [text]    show or set instructions the model follows from the next message
 /compact [focus]  make room in the model's memory: trim, then summarise (it happens by itself when 65% full)
 /undo             put back the files the agent changed for your last message (again: further back)
@@ -80,8 +80,8 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
   rl.on("close", () => (open = false));
   // Approvals and plan choices are asked on the same readline. Piped-in input has nobody to answer, so
   // changes are refused and plans aren't approved.
-  let cancelQuestion: (() => void) | undefined;
-  const question = questionOn(rl, (cancel) => (cancelQuestion = cancel));
+  let openQuestion: OpenQuestion | undefined;
+  const question = questionOn(rl, (open) => (openQuestion = open));
   const keyboard = process.stdin.isTTY;
   const session = newSession(root, keyboard ? keyboardApprover(question) : nobodyToAsk, (text) => process.stderr.write(text), {
     mode: options.mode ?? readConfig().defaultMode ?? "manual",
@@ -95,14 +95,23 @@ export async function chat(options: { model?: string; system?: string; mode?: Mo
     rl.prompt();
   };
   // Ctrl+C: answer "no" to an open question, or stop the answer being written, or, at the prompt, leave.
-  rl.on("SIGINT", () => (cancelQuestion ? cancelQuestion() : answering ? answering.abort() : rl.close()));
-  // Shift+Tab (it arrives as the key "tab" with shift held) cycles the mode while you're typing, and the
-  // prompt is redrawn in place, keeping what you've typed so far.
+  rl.on("SIGINT", () => (openQuestion ? openQuestion.cancel() : answering ? answering.abort() : rl.close()));
+  // Shift+Tab (it arrives as the key "tab" with shift held) moves to the next mode at any time, as in
+  // Claude Code. A question with its own Shift+Tab answer gets that instead: an edit's "yes, and switch to
+  // auto mode", a plan's "go ahead in auto mode". While you're typing, the prompt is redrawn in place,
+  // keeping what you've typed so far; while it's answering or asking, the new mode gets a line of its own.
   process.stdin.on("keypress", (_text, key) => {
-    if (key?.name !== "tab" || !key.shift || answering || cancelQuestion) return;
+    if (key?.name !== "tab" || !key.shift) return;
+    if (openQuestion?.shiftTab) return openQuestion.shiftTab();
     session.mode = nextMode(session.mode);
-    rl.setPrompt(promptFor(session.mode));
-    rl.prompt(true);
+    if (openQuestion) {
+      process.stderr.write(`\r\x1b[K${dim(`Mode ${MODE_HELP[session.mode]}`)}\n`);
+      rl.prompt(true); // the question again, with what you've typed so far
+    } else if (answering) process.stderr.write(dim(`\nMode ${MODE_HELP[session.mode]}, from its next step\n`));
+    else {
+      rl.setPrompt(promptFor(session.mode));
+      rl.prompt(true);
+    }
   });
   process.stderr.write(dim(`Chatting with ${model ?? "your default model"} in ${root}. Mode ${MODE_HELP[session.mode]}. Shift+Tab changes mode; /help for commands.\n`));
   prompt();
